@@ -131,6 +131,7 @@ st.markdown(CSS, unsafe_allow_html=True)
 QUESTIONS = json.loads((graph.BASE / "data" / "questions.json").read_text(encoding="utf-8"))["questions"]
 RUNS_FILE = graph.OUTPUT / "runs.jsonl"
 ABLATION_FILE = graph.OUTPUT / "ablation.json"
+ABLATION3_FILE = graph.OUTPUT / "ablation-3.json"   # 제출 뒤 — 기획보강 켬 · 끔
 MODES = ["질문하기", "데모 보기", "질문 선택"]
 HAS_KEY = os.getenv("OPENAI_API_KEY", "").startswith("sk-")
 
@@ -215,6 +216,13 @@ with st.sidebar:
                         "'나란히 보기'로 읽어 본다.</div>", unsafe_allow_html=True)
     else:
         st.markdown("<div class='kv'>절제 실험 결과가 없다 — python ablation.py</div>", unsafe_allow_html=True)
+    if ABLATION3_FILE.exists():   # 제출 뒤 기획 강화 — 숫자는 ablation-3.json 에서
+        q5_3 = json.loads(ABLATION3_FILE.read_text(encoding="utf-8"))["결과"].get("Q5", {})
+        on, off3 = q5_3.get("기본"), q5_3.get("기획보강끔")
+        if on and off3:
+            st.markdown(f"<div class='kv' style='margin-top:10px'>ablation-3(제출 뒤) — Q5 {on['n']}회에서 시대 절에 기간 밖 수상자가 남은 수가 "
+                        f"기획보강 켬 {on['경보합'].get('시대불일치', 0)}건 · 끔 {off3['경보합'].get('시대불일치', 0)}건</div>",
+                        unsafe_allow_html=True)
 
 
 # ─── 결과 화면 (세 모드가 함께 쓴다) ─────────────────────────────────

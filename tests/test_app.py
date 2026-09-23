@@ -56,3 +56,15 @@ def test_pick_mode_lists_prepared_questions(app):
     widget(app.radio, "mode").set_value("질문 선택").run()
     assert not app.exception
     assert len(widget(app.selectbox, "pick_q").options) == 10
+
+
+def test_sidebar_shows_ablation3_line_from_file(app):
+    """제출 뒤 ablation-3 한 줄 — 숫자는 output/ablation-3.json 에서 (파일이 없으면 줄도 없다)."""
+    path = graph.OUTPUT / "ablation-3.json"
+    text = " ".join(m.value for m in app.sidebar.markdown)
+    if not path.exists():
+        assert "ablation-3" not in text
+        return
+    q5 = json.loads(path.read_text(encoding="utf-8"))["결과"]["Q5"]
+    on, off = (q5[k]["경보합"].get("시대불일치", 0) for k in ("기본", "기획보강끔"))
+    assert f"기획보강 켬 {on}건 · 끔 {off}건" in text
