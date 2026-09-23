@@ -46,3 +46,20 @@ def test_closest_prefers_question_words():
     pool = ["가브리엘 가르시아 마르케스", "셀마 라겔뢰프", "귄터 그라스"]
     # 셀마 라겔뢰프 문서 앞부분에는 '여성'·'노벨'·'수상자' 같은 단어가 나온다
     assert baseline.closest("여성 노벨 문학상 수상자", pool) == "셀마 라겔뢰프"
+
+
+def test_broken_solo_report_is_rewritten_once(monkeypatch):
+    fake = FakeLLM(solo_start=["셀마 라겔뢰프"])
+    real = fake.__call__
+    state = {"n": 0}
+
+    def flaky(messages):
+        if "혼자 정리하는 필자" in messages[0]["content"] and state["n"] == 0:
+            state["n"] += 1
+            return '{"제목": "깨진 JSON", "절": [{"제목": "a", "문장": [{"글": "끝나지 않은'
+        return real(messages)
+
+    monkeypatch.setattr(graph, "_invoke", flaky)
+    out = baseline.solo("여성 수상자", budget=3000, n_sections=2)
+    assert len(out["sections"]) == 2
+    assert [c["단계"] for c in out["cost"]].count("집필(재)") == 1

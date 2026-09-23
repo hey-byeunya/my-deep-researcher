@@ -41,8 +41,12 @@ SWITCHES = {
     "역할": True,     # 끄면 모든 절이 기본역할 하나로 일한다
     "배정": True,     # 끄면 시작 문서를 주지 않는다 (서브에이전트가 알아서 고른다)
     "구역": True,     # 끄면 남의 구역(피하기 목록)을 알려 주지 않는다
-    "담당구역": True, # 끄면 수업 방식 — 남의 구역을 '다른 절의 시작문서 + 이미 읽은 문서'로만 잡는다
+    "담당구역": False, # 켜면 남의 '담당문서'까지 피하기에 넣는다. 끄면 수업 방식 — 남의 시작문서 + 이미 읽은 문서.
+                      # S7 절제 실험(ablation-1)에서 세 질문 모두 차이가 표준편차 안이어서 단순한 수업 방식으로
+                      # 확정했다. 담당문서는 읽는 목록(배정)으로는 계속 쓴다 — 효과는 그쪽에서 나왔다.
     "재위임": True,   # 끄면 1바퀴로 끝낸다
+    "재촉": False,    # 켜면 서브에이전트가 그만 읽겠다고 할 때 남은 예산을 알리고 한 번 더 묻고, 그래도 못 고르면
+                      # 지시문 단어와 가장 많이 겹치는 후보를 읽힌다(대조군과 같은 규칙). 배정끔 해석 보강용.
 }
 
 # 목차가 형식 단위로 나뉘었는지 알아보는 표지 — 이런 절은 전원이 같은 자료를 읽게 만든다
@@ -323,9 +327,9 @@ def dispatch(s):
 
 
 def zones(plan_toc, done, mine_index, switches, shared=SHARED):
-    """이 절이 피해야 할 문서 — 다른 절의 구역 + 다른 절이 이미 읽은 문서. 공용 서가는 뺀다.
+    """이 절이 피해야 할 문서 — 다른 절의 시작문서 + 다른 절이 이미 읽은 문서. 공용 서가는 뺀다.
 
-    담당구역 스위치를 끄면 수업 방식이 된다: 다른 절의 '시작문서'만 구역으로 본다.
+    담당구역 스위치를 켜면 다른 절의 담당문서 전부도 피한다. 기본은 끔(수업 방식, S7 에서 확정).
     """
     if not switches["구역"]:
         return []
@@ -336,7 +340,7 @@ def zones(plan_toc, done, mine_index, switches, shared=SHARED):
             continue
         if t.get("시작문서"):
             avoid.add(t["시작문서"])
-        if switches.get("담당구역", True):
+        if switches.get("담당구역", False):
             avoid |= set(t.get("담당문서", []))
     avoid |= {d for name, sec in done.items() if name != mine for d in sec.get("읽은문서", [])}
     return sorted(avoid - shared)
@@ -387,7 +391,8 @@ def candidates(read_pos, avoid, docs=None, links=None):
     어느 경우에도 피하기 목록(남의 구역)은 풀지 않는다. 수업 코드는 ③ 까지 비면(구역 밖 문서를 전부
     읽으면) 마지막으로 구역을 풀었는데, 그러면 다른 절과 같은 문서를 읽게 된다. 이 코퍼스에서는 한 절이
     한 바퀴에 3~5건을 읽고 구역 밖에 160건쯤 남아 그 단계에 닿지 않으므로 실제 차이는 거의 없다.
-    ③ 에서 수상자는 수상 연도순으로, 연도를 붙여 준다(수업 코드는 코퍼스 순서대로 앞 60건).
+    ③ 에서 수상자는 수상 연도순으로, 연도를 붙여 준다. 전부 보여 준다(176건, 약 3천 자) — 처음엔 앞 80건만
+    보여 줬는데, 그러면 1990년대 이후 수상자(모리슨·한강 …)가 후보에 아예 나오지 않았다(S7 테스트에서 발견).
     """
     docs, links = docs or DOCS, links or LINKS
     blocked = set(avoid)
@@ -406,24 +411,41 @@ def label(d):
     return f"{d} ({'·'.join(year)}년 수상)" if year else d
 
 
-def pick_next(t, read_pos, avoid, costs):
-    """링크 후보 중 하나를 모델이 고른다. 더 읽을 것이 없으면 None."""
+def closest(text, pool):
+    """text 의 단어(2글자 이상)가 문서 앞 300자에 가장 많이 나오는 후보. 모델을 부르지 않는 대체 규칙."""
+    words = set(re.findall(r"[가-힣A-Za-z0-9]{2,}", text))
+    return max(pool, key=lambda d: (sum(w in DOCS[d][:300] for w in words), -pool.index(d)))
+
+
+def pick_next(t, read_pos, avoid, costs, remaining=0, nudge=False):
+    """링크 후보 중 하나를 모델이 고른다. 더 읽을 것이 없으면 None.
+
+    nudge(재촉 스위치)가 켜져 있으면 그만두려 할 때 남은 예산을 알리고 한 번 더 묻고, 그래도 못 고르면
+    지시문 단어와 가장 많이 겹치는 후보를 고른다 — 혼자 하는 대조군(baseline.py)과 같은 규칙이다.
+    """
     cand, unfinished = candidates(read_pos, avoid)
     if not cand and not unfinished:
         return None
-    lines = [f"- {label(d)}" for d in cand[:80]]
+    pool = cand + unfinished
+    lines = [f"- {label(d)}" for d in cand]
     lines += [f"- {d} (이어 읽기: {read_pos[d]:,}/{len(DOCS[d]):,}자 읽음)" for d in unfinished]
-    raw, c = ask(f"{role_line(t)} 맡은 절을 쓰려고 다음에 읽을 문서를 후보에서 정확히 하나 고른다. "
-                 "후보에 쓸 만한 것이 없으면 그만둔다.\n"
-                 'JSON 으로만: {"문서": "후보 제목 그대로"} 또는 {"문서": null}',
-                 f"[맡은 절] {t['절']}\n[지시] {t['지시']}\n"
-                 f"[이미 읽음] {', '.join(read_pos) or '없음'}\n[후보]\n" + "\n".join(lines),
-                 "서브", t["절"], "다음문서")
+    system = (f"{role_line(t)} 맡은 절을 쓰려고 다음에 읽을 문서를 후보에서 정확히 하나 고른다. "
+              "후보에 쓸 만한 것이 없으면 그만둔다.\n"
+              'JSON 으로만: {"문서": "후보 제목 그대로"} 또는 {"문서": null}')
+    user = (f"[맡은 절] {t['절']}\n[지시] {t['지시']}\n"
+            f"[이미 읽음] {', '.join(read_pos) or '없음'}\n[후보]\n" + "\n".join(lines))
+    raw, c = ask(system, user, "서브", t["절"], "다음문서")
     costs.append(c)
     pick = resolve_title(str(jload(raw, {}).get("문서") or ""), DOCS)
-    if pick in cand or pick in unfinished:
+    if pick in pool:
         return pick
-    return None
+    if not nudge:
+        return None
+    raw, c = ask(system, user + f"\n\n[알림] 읽기 예산이 {remaining:,}자 남았다. 맡은 절과 관련 있을 만한 "
+                 "문서를 후보에서 하나 골라라.", "서브", t["절"], "다음문서(재)")
+    costs.append(c)
+    pick = resolve_title(str(jload(raw, {}).get("문서") or ""), DOCS)
+    return pick if pick in pool else closest(f"{t['절']} {t['지시']}", pool)
 
 
 def read_chunk(t, doc, start, size, costs):
@@ -438,7 +460,7 @@ def read_chunk(t, doc, start, size, costs):
     return raw.strip(), len(chunk)
 
 
-def explore(t, prior):
+def explore(t, prior, nudge=False):
     """예산(글자)만큼 읽는다. 순서: 시작문서 → 담당문서 → 모델이 고른 후보(링크 · 이어 읽기)."""
     read_pos = dict(prior.get("읽은위치", {}))
     notes = [list(n) for n in prior.get("메모", [])]
@@ -453,7 +475,7 @@ def explore(t, prior):
         doc = next((d for d in queue if d not in read_pos), None)
         doc = doc or next((d for d in queue if read_pos[d] < len(DOCS[d])), None)
         if doc is None:
-            doc = pick_next(t, read_pos, avoid, costs)
+            doc = pick_next(t, read_pos, avoid, costs, budget - spent, nudge)
             if doc is None:
                 break
         start = read_pos.get(doc, 0)
@@ -550,7 +572,7 @@ def strip_invalid(text, read):
 def researcher(s):
     """그래프 없이 직접 불러도 된다 — task 와 prior 만 있으면 된다."""
     t, prior = s["task"], s.get("prior") or {}
-    read_pos, notes, spent, costs, visits = explore(t, prior)
+    read_pos, notes, spent, costs, visits = explore(t, prior, s.get("switches", {}).get("재촉", False))
     draft = write(t, notes, costs, prior.get("본문", "") if prior else "")
     cites = check_citations(draft["본문"], set(read_pos))
     rewrote = False
@@ -704,10 +726,17 @@ def _rel(path):
         return str(path)
 
 
-def save_run(out, qid, label="기본", kind="팀"):
-    """보고서를 output/reports/ 에, 실행 기록 한 줄을 output/runs.jsonl 에 남긴다."""
+_save_lock = threading.Lock()
+
+
+def save_run(out, qid, label="기본", kind="팀", extra=None):
+    """보고서를 output/reports/ 에, 실행 기록 한 줄을 output/runs.jsonl 에 남긴다.
+
+    extra 는 기록에 덧붙일 값 (ablation.py 가 {"실험": …, "반복": …} 을 넣는다). 여러 스레드가 동시에
+    불러도 한 줄씩 온전히 쓰이도록 락을 건다.
+    """
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    run_id = f"{stamp}_{qid}_{kind}_{label}"
+    run_id = f"{stamp}_{qid}_{kind}_{label}" + (f"_r{extra['반복']}" if extra and "반복" in extra else "")
     (OUTPUT / "reports").mkdir(parents=True, exist_ok=True)
     report_path = OUTPUT / "reports" / f"{run_id}.md"
     report_path.write_text(out.get("report", ""), encoding="utf-8")
@@ -718,7 +747,8 @@ def save_run(out, qid, label="기본", kind="팀"):
            **record_of(out), "metrics": out.get("metrics", {}), "log": out.get("log", [])}
     rec.pop("all_drafts")
     rec["원고전부"] = out["sections"]            # 채택되지 않은 원고도 남긴다 — 데모에서 나란히 본다
-    with open(OUTPUT / "runs.jsonl", "a", encoding="utf-8") as f:
+    rec.update(extra or {})
+    with _save_lock, open(OUTPUT / "runs.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return run_id, report_path
 

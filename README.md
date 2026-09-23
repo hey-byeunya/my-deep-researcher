@@ -54,6 +54,17 @@ gpt-4o-mini 창(128K 토큰)의 2.8배.
 .venv/bin/python baseline.py --question Q5    # 같은 질문의 최근 팀 실행과 짝 — 팀이 실제로 읽은 글자만큼 예산을 받는다
 ```
 
+### 4. 절제 실험
+
+```bash
+.venv/bin/python ablation.py                    # Q2·Q5·Q8 × 설정 7개 × 3회 (끊겨도 다시 부르면 이어서)
+.venv/bin/python ablation.py --summarize-only   # LLM 없이 output/runs.jsonl 에서 요약표만 → output/ablation.json
+```
+
+- `output/ablation.json` — **ablation-2**(최종): 설정 8개 × Q2·Q5·Q8 × 3회 = 72번
+- `output/ablation-1.json` — ablation-1(기록용): 이 실험에서 후보 목록이 앞 80건만 보이던 버그를 찾았고,
+  구역 기본값을 수업 방식으로 바꿨다. 그래서 최종 결론에는 쓰지 않는다.
+
 지표는 [metrics.py](metrics.py) 의 `METRICS` 표에 이름 · 종류(신호/경보) · 보는 장치 · 한 줄 설명이 있다.
 저장된 실행 기록만으로 다시 계산되므로 LLM 없이 비교할 수 있다.
 

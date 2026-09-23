@@ -58,14 +58,8 @@ def pair_run(qid, pair_id=None, path=graph.OUTPUT / "runs.jsonl"):
 
 
 def closest(question, pool):
-    """질문 단어(2글자 이상)가 문서 앞 300자에 가장 많이 나오는 후보. 모델을 부르지 않는 대체 규칙."""
-    words = {w for w in re.findall(r"[가-힣A-Za-z0-9]{2,}", question)}
-
-    def score(d):
-        head = graph.DOCS[d][:300]
-        return sum(w in head for w in words)
-
-    return max(pool, key=lambda d: (score(d), -pool.index(d)))
+    """질문 단어가 문서 앞 300자에 가장 많이 나오는 후보 — 팀의 재촉 스위치와 같은 규칙(graph.closest)."""
+    return graph.closest(question, pool)
 
 
 def solo(question, budget, n_sections):
@@ -88,11 +82,11 @@ def solo(question, budget, n_sections):
         doc = next((d for d in queue if d not in read_pos), None)
         if doc is None:
             cand, unfinished = graph.candidates(read_pos, set())
-            pool = cand[:80] + unfinished
+            pool = cand + unfinished
             if not pool:
                 break
             memo = "\n".join(f"- {d}: {n[:120]}" for d, n in notes[-30:]) or "(없음)"
-            lines = [f"- {graph.label(d)}" for d in cand[:80]]
+            lines = [f"- {graph.label(d)}" for d in cand]
             lines += [f"- {d} (이어 읽기: {read_pos[d]:,}/{len(graph.DOCS[d]):,}자 읽음)" for d in unfinished]
             user = f"[질문] {question}\n[지금까지 모은 요약]\n{memo}\n[후보]\n" + "\n".join(lines)
             raw, c = graph.ask(PICK_SYSTEM, user, "코디", "(혼자)", "다음문서")
@@ -122,11 +116,18 @@ def solo(question, budget, n_sections):
     # ③ 모은 요약을 한 창에 모두 넣고 보고서 전체를 한 번에 쓴다
     material = "\n\n".join(f"[자료: {d}]\n{n}" for d, n in notes) or "(읽은 자료 없음)"
     allowed = ", ".join(dict.fromkeys(d for d, _ in notes)) or "(없음)"
-    raw, c = graph.ask(WRITE_SYSTEM.format(n=n_sections),
-                       f"[질문] {question}\n[근거로 쓸 수 있는 문서] {allowed}\n\n[모은 요약]\n{material}",
-                       "코디", "(혼자)", "집필")
-    costs.append(c)
-    obj = graph.jload(raw, {})
+    obj = {}
+    for attempt in range(2):
+        # JSON 이 깨져 절을 하나도 못 읽으면 한 번 더 쓴다 — 팀 집필은 깨진 응답에서 본문을 건지는데
+        # 대조군에 그런 장치가 없으면 공정하지 않다(ablation-2 Q2 3회차에서 절 0개로 근거율 0%가 나왔다)
+        raw, c = graph.ask(WRITE_SYSTEM.format(n=n_sections),
+                           f"[질문] {question}\n[근거로 쓸 수 있는 문서] {allowed}\n\n[모은 요약]\n{material}",
+                           "코디", "(혼자)", "집필" if attempt == 0 else "집필(재)")
+        costs.append(c)
+        obj = graph.jload(raw, {})
+        if isinstance(obj.get("절"), list) and obj["절"]:
+            break
+        log.append("   ◎ 보고서 JSON 을 읽지 못해 한 번 더 쓴다")
     sections, parts = [], [f"# {obj.get('제목') or question}", str(obj.get("머리말") or "").strip()]
     for i, part in enumerate(obj.get("절") or []):
         body = graph.render(part.get("문장") or [])
