@@ -14,20 +14,17 @@
 ## 구조
 
 ```
-data/                corpus.json (docs + links) · questions.json · award_years.json · seed_check.json
+data/                corpus.json (docs + links) · questions.json · award_years.json (노벨상 공식 수상 연도)
 config.json          도메인에 묶인 값 (절수 · 절예산 · 바퀴 상한 · 역할 명단)
 collect_corpus.py    위키백과 코퍼스 수집
-check_seeds.py       수상자 명단을 노벨상 공식 명단과 대조 (비교만, 수정 안 함) · 수상 연도 표
 graph.py             기획 → 배치 → 서브에이전트 → 점검 → 종합 → 측정, 실행 저장
 metrics.py           지표 — 정답표를 쓰지 않는다 (신호 · 경보)
 titles.py            문서 제목 맞추기 규칙 — graph(인용 검사)와 metrics(근거율)가 같이 쓴다
 baseline.py          혼자 하는 대조군 (짝 팀 실행이 실제로 읽은 만큼 예산)
 ablation.py          스위치를 하나씩 끄고 재는 실험
-plan_check.py        기획만 여러 번 돌려 목차가 얼마나 흔들리는지 재는 실험 (기획을 고칠 때 먼저 쓴다)
 app.py               데모 (streamlit) · .streamlit/config.toml 은 화면 테마
 compare.py           나란히 읽기 화면 (사람이 판단)
-make_screenshots.py  데모 화면 캡처
-output/              runs.jsonl · ablation.json · ablation-1.json · ablation-3.json · plans.jsonl · reports/ · compare/
+output/              runs.jsonl · ablation.json · ablation-1.json · ablation-3.json · reports/ · compare/
 docs/                reading-notes.md (사람의 판단과 실패 추적) · screenshots/
 tests/               pytest — 가짜 모델(tests/fakes.py)로 네트워크 없이
 ```
@@ -36,9 +33,9 @@ tests/               pytest — 가짜 모델(tests/fakes.py)로 네트워크 �
 
 ```bash
 python3.14 -m venv .venv
-.venv/bin/pip install -r requirements.txt   # 설치된 정확한 버전은 requirements-lock.txt
+.venv/bin/pip install -r requirements.txt
 cp .env.example .env                        # OPENAI_API_KEY 채우기 (.env 는 저장소에 올라가지 않는다)
-.venv/bin/pytest -q                         # 97개 — LLM · 네트워크 없이 돈다
+.venv/bin/pytest -q                         # 92개 — LLM · 네트워크 없이 돈다
 ```
 
 ## 실행
@@ -46,12 +43,12 @@ cp .env.example .env                        # OPENAI_API_KEY 채우기 (.env 는
 ### 1. 코퍼스 (이미 `data/corpus.json` 으로 들어 있다 — 다시 모을 때만)
 
 ```bash
-.venv/bin/python check_seeds.py              # 수상자 명단이 공식 명단과 같은지 먼저 본다 → data/award_years.json
 .venv/bin/python collect_corpus.py --refresh # 한국어 위키백과에서 다시 모은다 (API 응답은 .cache/ 에 남는다)
 .venv/bin/python collect_corpus.py --stats   # 모으지 않고 통계만
 ```
 
 현재 코퍼스: 문서 176건(수상자 122 · 작품 47 · 공통 7), 602,186자, 359,510토큰 — gpt-4o-mini 창(128K 토큰)의 2.8배.
+수상 연도(`data/award_years.json`)는 노벨상 공식 API 에서 받아 명단과 대조한 결과다(대조 스크립트는 개발용이라 저장소에 넣지 않았다).
 
 ### 2. 파이프라인
 
@@ -86,17 +83,10 @@ cp .env.example .env                        # OPENAI_API_KEY 채우기 (.env 는
 - `output/ablation-3.json` — ablation-3(제출 뒤): 기획보강 켬(기본) · 끔을 Q2·Q5·Q8 × 5회 번갈아.
   `.venv/bin/python ablation.py --exp ablation-3 --settings 기본 기획보강끔 --repeats 5`
 
-기획만 따로 잴 때(전 구간보다 훨씬 싸다 — 한 번에 LLM 1~2회):
-
-```bash
-.venv/bin/python plan_check.py --label 확인 --settings 켬 기획보강끔   # 켬/끔을 번갈아 Q2·Q5·Q8 × 5회
-.venv/bin/python plan_check.py --summarize-only                         # LLM 없이 표만
-```
-
-재기획 · 빈 절 제외 · 시대불일치 · 구역겹침 · 배정실패 · 목차 일관성(같은 질문 5회의 담당문서 겹침) ·
-서로 다른 목차 수 · 코디 글자를 센다. **비교할 설정은 반드시 같은 묶음 안에서 번갈아 돌린다** — 모델 입력이
-같아도 묶음마다 경향이 달라(5번 모두 같은 목차가 나오기도 했다) 따로 잰 묶음끼리는 비교가 안 된다.
-`기획보강`(기본 켬)은 코드 쪽 검사만 더한다 — 시대 절 연도 검사 · 가로지르는 절 잡기 · 빈 절의 지시 나눠 주기.
+**비교할 설정은 반드시 같은 묶음 안에서 번갈아 돌린다** — 모델 입력이 같아도 묶음마다 경향이 달라(5번 모두 같은 목차가
+나오기도 했다) 따로 잰 실험끼리는 비교가 안 된다. ablation.py 는 회차마다 설정을 번갈아 돌린다.
+`기획보강`(기본 켬)은 코드 쪽 검사만 더한다 — 시대 절 연도 검사 · 가로지르는 절 잡기 · 빈 절의 지시 나눠 주기 ·
+구역을 가진 절 수를 줄이는 재기획은 받지 않기.
 
 지표는 [metrics.py](metrics.py) 의 `METRICS` 표에 이름 · 종류(신호/경보) · 보는 장치 · 한 줄 설명이 있다.
 저장된 실행 기록만으로 다시 계산되므로 LLM 없이 비교할 수 있다.
@@ -128,8 +118,7 @@ cp .env.example .env                        # OPENAI_API_KEY 채우기 (.env 는
 | **보고서** | **나란히 보기** |
 | ![보고서](docs/screenshots/demo-report.png) | ![나란히 보기](docs/screenshots/demo-side.png) |
 
-화면 캡처는 데모를 띄워 둔 채로 `make_screenshots.py` 로 다시 만든다. playwright 가 필요한데, 캡처에만 쓰므로
-requirements.txt 에는 넣지 않았다(`.venv/bin/pip install playwright && .venv/bin/playwright install chromium`).
+화면 캡처(`docs/screenshots/`)는 데모를 띄워 두고 playwright 로 찍었다(캡처 스크립트는 개발용이라 저장소에 넣지 않았다).
 
 ### 6. 나란히 읽기 (사람이 판단하는 화면)
 

@@ -5,7 +5,6 @@ import pytest
 
 import ablation
 import baseline
-import check_seeds
 import compare
 import graph
 import metrics
@@ -80,10 +79,6 @@ def test_compare_exits_with_message_when_no_runs(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as e:
         compare.main()
     assert "runs.jsonl" in str(e.value)
-
-
-def test_award_years_tolerates_missing_keys():
-    assert check_seeds.award_years({"일치": [{"kowiki": "한강 (작가)", "연도": ["2024"]}]}) == {"한강 (작가)": ["2024"]}
 
 
 def test_women_count_uses_list_length():

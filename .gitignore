@@ -25,6 +25,17 @@ htmlcov/
 .idea/
 *.code-workspace
 
+# ── 개발용 도구와 그 기록 — 과제 제출 대상이 아니다 (로컬에만 둔다)
+make_screenshots.py
+plan_check.py
+output/plans.json
+output/plans.jsonl
+check_seeds.py
+data/seed_check.json
+tests/test_check_seeds.py
+requirements-lock.txt
+pytest.ini
+
 # ── 화면 캡처 도구(playwright) 부산물 — 캡처 결과는 docs/screenshots/ 로 추적한다
 test-results/
 playwright-report/
