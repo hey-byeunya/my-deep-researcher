@@ -43,9 +43,13 @@ gpt-4o-mini 창(128K 토큰)의 2.8배.
 
 ```bash
 .venv/bin/python graph.py --question Q5 --plan-only   # 기획만 — 목차 · 역할 · 담당문서 · 예산 확인
-.venv/bin/python graph.py --question Q5               # 전 구간
-.venv/bin/python graph.py --question Q5 --no-구역      # 스위치 끄기 (역할 · 배정 · 구역 · 재위임)
+.venv/bin/python graph.py --question Q5               # 전 구간 → output/reports/*.md · output/runs.jsonl 에 저장
+.venv/bin/python graph.py --question Q5 --print-report # 보고서 본문까지 출력
+.venv/bin/python graph.py --question Q5 --no-구역      # 스위치 끄기 (역할 · 배정 · 구역 · 담당구역 · 재위임)
 ```
+
+지표는 [metrics.py](metrics.py) 의 `METRICS` 표에 이름 · 종류(신호/경보) · 보는 장치 · 한 줄 설명이 있다.
+저장된 실행 기록만으로 다시 계산되므로 LLM 없이 비교할 수 있다.
 
 _(이후 단계 실행 방법은 구현하면서 채운다)_
 

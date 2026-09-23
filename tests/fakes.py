@@ -33,8 +33,12 @@ class FakeLLM:
                 w = self.writes[section]
                 return json.dumps(w.pop(0) if len(w) > 1 else w[0], ensure_ascii=False)
             docs = re.findall(r"\[자료: ([^\]]+)\]", user)
-            body = " ".join(f"{d} 에 관한 문장이다 «{d}»." for d in docs) or "자료가 없다."
-            return json.dumps({"본문": body * 3, "충분": True, "부족": ""}, ensure_ascii=False)
+            sents = [{"글": f"{d} 에 관한 문장이다.", "근거": [d]} for d in docs] * 3
+            return json.dumps({"문장": sents or [{"글": "자료가 없다.", "근거": []}], "충분": True, "부족": ""},
+                              ensure_ascii=False)
+        if "편집자" in system:
+            return json.dumps({"머리말": "이 보고서는 여러 절로 나뉜다.", "맺음말": "이상으로 마친다."},
+                              ensure_ascii=False)
         raise AssertionError(f"모르는 단계: {system[:40]}")
 
     def stage_count(self, key):

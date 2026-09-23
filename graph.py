@@ -13,6 +13,7 @@
     극단적이라, 건수 예산이면 처칠 한 건과 싱어 한 건이 같은 값이 된다.
 """
 import argparse
+import hashlib
 import json
 import operator
 import os
@@ -26,6 +27,8 @@ from typing import Annotated, TypedDict
 from dotenv import load_dotenv
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
+
+import metrics
 
 BASE = Path(__file__).parent
 load_dotenv(BASE / ".env")
@@ -463,13 +466,30 @@ def explore(t, prior):
 
 
 WRITE_SYSTEM = """{role} 아래 자료만 근거로 보고서의 한 절을 쓴다.
-- 여섯 문장 이상 열두 문장 이하, 600자 이상.
-- 문장 끝마다 근거가 된 문서를 «문서 제목» 으로 붙인다. «» 안에는 [근거로 쓸 수 있는 문서] 에 있는
-  제목만 그대로 넣는다. 절 제목이나 작품 이름을 «» 안에 넣지 않는다.
-- 작품·책 이름은 《》 로 쓴다 (예: 《채식주의자》). 《》 는 근거 표시가 아니다.
-- 자료에 없는 내용은 쓰지 않는다. 모르는 것은 '자료에서 확인되지 않는다'고 적는다.
+- 여섯 문장 이상 열두 문장 이하, 합쳐서 600자 이상.
+- 문장마다 그 문장의 근거가 된 문서를 '근거' 칸에 적는다. [근거로 쓸 수 있는 문서] 에 있는 제목만
+  그대로 쓴다. 근거가 없는 문장은 쓰지 않는다.
+- 작품·책 이름은 문장 안에서 《》 로 쓴다 (예: 《채식주의자》).
+- 자료에 없는 내용은 쓰지 않는다.
 - 지시를 자료로 다 채우지 못했으면 충분을 false 로 하고, 무엇이 비었는지 부족에 한 문장으로 적는다.
-JSON 으로만: {{"본문": "...", "충분": true, "부족": ""}}"""
+JSON 으로만:
+{{"문장": [{{"글": "문장 하나", "근거": ["문서 제목"]}}], "충분": true, "부족": ""}}"""
+
+
+def render(sentences_):
+    """문장 목록을 본문으로 — 근거는 코드가 «제목» 으로 문장 끝(마침표 앞)에 붙인다."""
+    out = []
+    for item in sentences_:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("글") or "").strip()
+        refs = [str(r).strip() for r in (item.get("근거") or []) if str(r).strip()]
+        if not text:
+            continue
+        end = text[-1] if text[-1] in ".!?" else "."
+        body = text[:-1] if text[-1] in ".!?" else text
+        out.append(f"{body} «{', '.join(dict.fromkeys(refs))}»{end}" if refs else f"{body}{end}")
+    return " ".join(out)
 
 
 def write(t, notes, costs, prior_text="", feedback=""):
@@ -483,7 +503,9 @@ def write(t, notes, costs, prior_text="", feedback=""):
                  "서브", t["절"], "집필(재)" if feedback else "집필")
     costs.append(c)
     obj = jload(raw, None)
-    if isinstance(obj, dict) and "본문" in obj:
+    if isinstance(obj, dict) and isinstance(obj.get("문장"), list):
+        text = render(obj["문장"])                  # 근거를 데이터로 받아 코드가 «» 를 붙인다
+    elif isinstance(obj, dict) and "본문" in obj:   # 예전 형식도 받는다
         text = str(obj.get("본문") or "").strip()
     else:                         # JSON 자체가 깨졌을 때만 날것에서 본문을 건진다
         obj = {"충분": False, "부족": "원고 형식이 깨짐"}
@@ -507,6 +529,23 @@ def check_citations(text, read):
             "없는문서인용": sorted(set(unknown))}
 
 
+def strip_invalid(text, read):
+    """읽지 않았거나 코퍼스에 없는 «» 표시를 지운다. (고친 글, 지운 이름 목록)."""
+    removed = []
+
+    def fix(m):
+        keep = []
+        for part in re.split(r"\s*[,·]\s*", m.group(1)):
+            title = resolve_title(part, DOCS)
+            if title in read:
+                keep.append(title)
+            else:
+                removed.append(title or part)
+        return f" «{', '.join(keep)}»" if keep else ""
+
+    return re.sub(r"\s*«([^»]+)»", fix, text), removed
+
+
 def researcher(s):
     """그래프 없이 직접 불러도 된다 — task 와 prior 만 있으면 된다."""
     t, prior = s["task"], s.get("prior") or {}
@@ -518,17 +557,22 @@ def researcher(s):
         # 자료를 읽고도 «» 근거 표시를 통째로 빠뜨린 원고는, 읽기 없이 집필만 한 번 다시 시킨다.
         # 재위임(더 읽으러 다시 내보내기)이 아니다 — 재위임은 스스로 부족하다고 신고한 절만 한다.
         again = write(t, notes, costs, prior.get("본문", "") if prior else "",
-                      feedback=f"원고에 «» 근거 표시가 하나도 없다. 문장 끝마다 [근거로 쓸 수 있는 문서] 의 "
-                               f"제목을 «제목» 으로 붙여 다시 써라.\n[지난 원고]\n{draft['본문']}")
+                      feedback=f"지난 원고의 문장들에 근거가 하나도 없다. 문장마다 '근거' 칸에 "
+                               f"[근거로 쓸 수 있는 문서] 의 제목을 적어 다시 써라.\n[지난 원고]\n{draft['본문']}")
         again_cites = check_citations(again["본문"], set(read_pos))
-        if again_cites["인용"] and not again_cites["허위인용"] and not again_cites["없는문서인용"]:
-            draft, cites, rewrote = again, again_cites, True
+        valid = [c for c in again_cites["인용"] if c in read_pos]
+        if valid:
+            # 올바른 근거가 하나라도 생겼으면 받는다. 틀린 «» 표시는 코드가 지우고 그 목록을 남긴다
+            # (지표의 '제거된인용' 경보로 드러난다). 틀린 것 하나 때문에 전부 버리면 근거 0곳 원고가 남는다.
+            text, removed = strip_invalid(again["본문"], set(read_pos))
+            draft, rewrote = {**again, "본문": text}, True
+            cites = {**check_citations(text, set(read_pos)), "제거된인용": removed}
     sec = {"절": t["절"], "번호": t["번호"], "바퀴": t["바퀴"], "역할": t["역할"],
            "시작문서": t.get("시작문서", ""), "담당문서": t.get("담당문서", []),
            "피하기": t.get("피하기", []), "지시": t["지시"],
            "예산": t["예산"], "이번_읽은글자": spent,
            "읽은문서": list(read_pos), "읽은위치": read_pos, "메모": notes,
-           **draft, **cites, "인용보강": rewrote}
+           **draft, **{"제거된인용": [], **cites}, "인용보강": rewrote}
     mark = "충분" if sec["충분"] else f"부족({sec['부족'][:24]})"
     mark += " · 인용 보강 재집필" if rewrote else ""
     warn = f" · ⚠ 허위인용 {len(sec['허위인용'])}" if sec["허위인용"] else ""
@@ -598,14 +642,84 @@ def route(s):
     return "more" if s["plan"]["배치"] else "done"
 
 
-# ─── ⑤ 종합 · ⑥ 측정 — S5 에서 채운다 ─────────────────────────────
+# ─── ⑤ 종합 ─────────────────────────────────────────────────────
+
+OUTLINE_CHARS = 90   # 코디네이터(편집자)가 절마다 보는 첫머리 길이 — 본문은 보지 않는다
+
+SYNTH_SYSTEM = """너는 보고서를 마무리하는 편집자다. 아래는 조사관들이 각자 쓴 절의 제목과 첫머리다.
+본문은 고치지 않는다. 보고서 전체를 여는 머리말과 닫는 맺음말만 쓴다. 각각 세 문장 이내.
+머리말·맺음말에는 절 첫머리에 없는 새 사실을 넣지 않는다 — 무엇을 어떤 순서로 다루는지만 안내한다.
+JSON 으로만: {"머리말": "...", "맺음말": "..."}"""
+
 
 def synthesize(s):
-    return {"report": "(빈 노드 — S5 에서 채운다)", "log": ["⑤ 종합   (빈 노드)"]}
+    p = s["plan"]
+    chosen = chosen_sections(s["sections"], p.get("채택"))
+    order = sorted(chosen.values(), key=lambda x: x["번호"])
+    outline = "\n".join(f"{i + 1}. {x['절']}: {x['본문'][:OUTLINE_CHARS]}…" for i, x in enumerate(order))
+    raw, c = ask(SYNTH_SYSTEM, f"[질문] {s['question']}\n[보고서 제목] {p['제목']}\n[절 목록]\n{outline}",
+                 "코디", stage="종합")
+    obj = jload(raw, {})
+    parts = [f"# {p['제목']}", str(obj.get("머리말") or "").strip()]
+    for i, x in enumerate(order):
+        parts.append(f"## {i + 1}. {x['절']} _({x['역할']})_\n\n{x['본문']}")
+    parts.append(f"## 맺음말\n\n{str(obj.get('맺음말') or '').strip()}")
+    report = "\n\n".join(part for part in parts if part.strip())
+    return {"report": report, "cost": [c],
+            "log": [f"⑤ 종합   {len(order)}절 이어 붙임 → 보고서 {len(report):,}자 "
+                    f"(편집자는 절마다 첫머리 {OUTLINE_CHARS}자만 봤다)"]}
+
+
+# ─── ⑥ 측정 ─────────────────────────────────────────────────────
+
+def record_of(s):
+    """실행 결과를 metrics.measure 가 읽는 모양으로. 저장(runs.jsonl)도 이 모양이다."""
+    chosen = chosen_sections(s["sections"], s["plan"].get("채택"))
+    return {"question": s["question"], "plan": s["plan"], "report": s.get("report", ""),
+            "sections": sorted(chosen.values(), key=lambda x: x["번호"]),
+            "all_drafts": s["sections"], "visited": s["visited"], "cost": s["cost"]}
 
 
 def evaluate(s):
-    return {"metrics": {}, "log": ["⑥ 측정   (빈 노드)"]}
+    m, detail = metrics.measure(record_of(s), CORPUS)
+    return {"metrics": {**m, "_세부": detail}, "log": [f"⑥ 측정   {metrics.one_line(m)}"]}
+
+
+# ─── 저장 ───────────────────────────────────────────────────────
+
+OUTPUT = BASE / "output"
+
+
+def corpus_version():
+    """어느 코퍼스로 돌렸는지 — 수집일 · 문서 수 · 제목 해시. 코퍼스가 바뀐 실행끼리 섞어 비교하지 않으려고."""
+    digest = hashlib.sha1("\n".join(sorted(DOCS)).encode()).hexdigest()[:10]
+    return {"수집일": CORPUS.get("_수집일"), "문서수": len(DOCS), "해시": digest}
+
+
+def _rel(path):
+    try:
+        return str(path.relative_to(BASE))
+    except ValueError:
+        return str(path)
+
+
+def save_run(out, qid, label="기본", kind="팀"):
+    """보고서를 output/reports/ 에, 실행 기록 한 줄을 output/runs.jsonl 에 남긴다."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    run_id = f"{stamp}_{qid}_{kind}_{label}"
+    (OUTPUT / "reports").mkdir(parents=True, exist_ok=True)
+    report_path = OUTPUT / "reports" / f"{run_id}.md"
+    report_path.write_text(out.get("report", ""), encoding="utf-8")
+    rec = {"id": run_id, "시각": stamp, "질문id": qid, "종류": kind, "설정": label,
+           "스위치": out.get("switches", {}), "config": {k: CONFIG[k] for k in (
+               "모델", "온도", "절수", "절예산_글자", "문서당_읽기상한", "최대바퀴", "카드_글자")},
+           "코퍼스": corpus_version(), "보고서파일": _rel(report_path),
+           **record_of(out), "metrics": out.get("metrics", {}), "log": out.get("log", [])}
+    rec.pop("all_drafts")
+    rec["원고전부"] = out["sections"]            # 채택되지 않은 원고도 남긴다 — 데모에서 나란히 본다
+    with open(OUTPUT / "runs.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return run_id, report_path
 
 
 # ─── 그래프 ─────────────────────────────────────────────────────
@@ -648,6 +762,8 @@ def main():
     ap = argparse.ArgumentParser(description="노벨 문학상 딥리서처")
     ap.add_argument("--question", default="Q5", help="questions.json 의 id 또는 질문 문장")
     ap.add_argument("--plan-only", action="store_true", help="기획까지만 돌리고 목차를 보여 준다")
+    ap.add_argument("--no-save", action="store_true", help="output/ 에 저장하지 않는다")
+    ap.add_argument("--print-report", action="store_true", help="보고서 본문을 출력한다")
     for name in SWITCHES:
         ap.add_argument(f"--no-{name}", action="store_true", help=f"'{name}' 스위치를 끈다")
     args = ap.parse_args()
@@ -658,8 +774,15 @@ def main():
     print("\n".join(out["log"]))
     if args.plan_only:
         print(json.dumps(out["plan"], ensure_ascii=False, indent=1))
-    coord = sum(c["글자"] for c in out["cost"] if c["누가"] == "코디")
-    print(f"\n코디네이터가 본 글자 {coord:,} · 코퍼스 전체 {sum(map(len, DOCS.values())):,}")
+        coord = sum(c["글자"] for c in out["cost"] if c["누가"] == "코디")
+        print(f"\n코디네이터가 본 글자 {coord:,} · 코퍼스 전체 {sum(map(len, DOCS.values())):,}")
+        return
+    if not args.no_save:
+        label = "기본" if not off else "끔-" + "-".join(off)
+        run_id, path = save_run(out, qid, label)
+        print(f"\n저장: {_rel(path)} · output/runs.jsonl ({run_id})")
+    if args.print_report:
+        print("\n" + out["report"])
 
 
 if __name__ == "__main__":

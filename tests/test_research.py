@@ -177,3 +177,29 @@ def test_citation_less_draft_is_rewritten_once(monkeypatch):
     sec = out["sections"][0]
     assert sec["인용보강"] and sec["인용"] == ["셀마 라겔뢰프"] * 10
     assert [c["단계"] for c in out["cost"]].count("집필(재)") == 1      # 한 번만, 읽기 없이
+
+
+def test_strip_invalid_keeps_only_read_citations():
+    text = "가 «셀마 라겔뢰프». 나 «토니 모리슨». 다 «셀마 라겔뢰프, 없는 책»."
+    fixed, removed = graph.strip_invalid(text, {"셀마 라겔뢰프"})
+    assert fixed == "가 «셀마 라겔뢰프». 나. 다 «셀마 라겔뢰프»."
+    assert removed == ["토니 모리슨", "없는 책"]
+
+
+def test_rewrite_with_one_bad_citation_is_kept_and_cleaned(monkeypatch):
+    bare = {"본문": "라겔뢰프는 여성 최초 수상자다. " * 10, "충분": True, "부족": ""}
+    mixed = {"본문": "라겔뢰프는 여성 최초다 «셀마 라겔뢰프». 모리슨도 있다 «토니 모리슨». " * 5, "충분": True, "부족": ""}
+    monkeypatch.setattr(graph, "_invoke", FakeLLM(write={"초기 여성 수상자": [bare, mixed]}))
+    sec = graph.researcher({"task": task(), "prior": {}})["sections"][0]
+    assert sec["인용보강"] and "토니 모리슨" not in sec["본문"]
+    assert sec["허위인용"] == [] and sec["제거된인용"] == ["토니 모리슨"] * 5
+
+
+def test_render_attaches_citations_from_data():
+    text = graph.render([{"글": "라겔뢰프는 여성 최초 수상자다.", "근거": ["셀마 라겔뢰프"]},
+                         {"글": "근거 없는 문장", "근거": []},
+                         {"글": "둘을 함께 댄다!", "근거": ["셀마 라겔뢰프", "그라치아 델레다", "셀마 라겔뢰프"]}])
+    assert text == ("라겔뢰프는 여성 최초 수상자다 «셀마 라겔뢰프». 근거 없는 문장. "
+                    "둘을 함께 댄다 «셀마 라겔뢰프, 그라치아 델레다»!")
+    assert graph.check_citations(text, {"셀마 라겔뢰프", "그라치아 델레다"})["인용"] == \
+        ["셀마 라겔뢰프", "셀마 라겔뢰프", "그라치아 델레다"]
