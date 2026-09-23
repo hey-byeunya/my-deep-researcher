@@ -48,6 +48,12 @@ gpt-4o-mini 창(128K 토큰)의 2.8배.
 .venv/bin/python graph.py --question Q5 --no-구역      # 스위치 끄기 (역할 · 배정 · 구역 · 담당구역 · 재위임)
 ```
 
+### 3. 혼자 하는 대조군
+
+```bash
+.venv/bin/python baseline.py --question Q5    # 같은 질문의 최근 팀 실행과 짝 — 팀이 실제로 읽은 글자만큼 예산을 받는다
+```
+
 지표는 [metrics.py](metrics.py) 의 `METRICS` 표에 이름 · 종류(신호/경보) · 보는 장치 · 한 줄 설명이 있다.
 저장된 실행 기록만으로 다시 계산되므로 LLM 없이 비교할 수 있다.
 

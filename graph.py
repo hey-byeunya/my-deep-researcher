@@ -377,7 +377,8 @@ MIN_READ = 300   # 남은 예산이 이보다 적으면 더 읽지 않는다 (�
 
 
 def role_line(t):
-    return f"너는 {t['역할']}이다. {ROSTER.get(t['역할'], ROSTER[CONFIG['기본역할']])}."
+    desc = t.get("역할설명") or ROSTER.get(t["역할"], ROSTER[CONFIG["기본역할"]])
+    return f"너는 {t['역할']}이다. {desc}."
 
 
 def candidates(read_pos, avoid, docs=None, links=None):
