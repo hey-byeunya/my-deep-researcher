@@ -12,6 +12,7 @@
   · 코디네이터가 절마다 담당문서(2~6건)를 배정하고, 코드가 실재 여부 · 구역 겹침 · 형식 단위 절을 검사한다.
     겹침이 나면 한 번 다시 짜게 하고, 그래도 구역이 빈 절은 파견하지 않는다. 공통 문서는 공용 서가.
   · 문서 카드에 노벨상 공식 수상 연도를 붙이고 연도순으로 준다 — 그래야 시대로 나눈 목차가 나온다.
+    절 제목에 기간(1951-2000)이 있으면 코드가 공식 연도로 담당 수상자를 검사해 맞는 시대 절로 옮긴다.
   · 집필은 문장마다 '근거' 칸을 채우게 하고 «» 는 코드가 붙인다. 읽지 않은 문서 인용은 코드가 잡는다.
   · 두 번째 원고는 허위인용이 없고 근거 문서가 줄지 않을 때만 받는다(keep_new).
   · 비용 기록을 전역 변수가 아니라 State 의 cost 목록에 쌓는다 — 누가(코디네이터/서브에이전트)
@@ -34,7 +35,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 import metrics
-from titles import resolve_title, split_refs   # 제목 맞추기 규칙은 metrics 와 함께 쓴다
+from titles import era_range, resolve_title, split_refs   # 제목 맞추기 규칙은 metrics 와 함께 쓴다
 
 BASE = Path(__file__).parent
 load_dotenv(BASE / ".env")
@@ -166,6 +167,11 @@ def cards(width=None):
     격리가 약해진다. 작품은 작가 문서가 가리키므로 제목만 알려 줘도 배정할 수 있다.
     수상자 카드에는 공식 수상 연도를 붙이고 연도순으로 늘어놓는다 — 앞 120자만으로는 언제
     받았는지 드러나지 않는 문서가 많아, 코디네이터가 시대로 나눌 근거가 없었다.
+
+    카드마다 번호(D17)를 붙이고 "번호 제목"으로 배정받는 방식도 시험했다(plan_check.py 'P1a-번호카드').
+    베껴 온 제목은 사라졌지만 Q5 목차가 5번 모두 형식 단위(시대적 배경 · 주제 분석 · 사상적 흐름)가 되어
+    시대별 목차가 한 번도 나오지 않았다(번호 없는 카드는 5번 중 4번). 베낀 제목은 resolve_title 이 이미
+    고치므로 되돌렸다 — 경보는 줄었는데 목차는 나빠진, 지표만 보면 놓치는 경우였다.
     """
     width = width or CONFIG["카드_글자"]
     works = {}
@@ -202,15 +208,31 @@ def allocate_budget(weights, total, min_ratio):
     return [int(r * scale) for r in lifted]
 
 
-def validate_plan(obj, docs, roster, cfg, switches, shared=SHARED):
+def fit(text, doc):
+    """절 제목 · 지시에 그 문서의 이름(작품이면 작가 이름도)이 몇 토막 나오나 — 겹친 문서를 어느 절에 둘지 가른다."""
+    names = [doc] + ([AUTHOR_OF[doc]] if doc in AUTHOR_OF else [])
+    tokens = {w for n in names for w in re.sub(r"\s*\([^)]*\)$", "", n).split() if len(w) >= 2}
+    return sum(w in text for w in tokens)
+
+
+def validate_plan(obj, docs, roster, cfg, switches, shared=SHARED, years=None):
     """모델이 짠 목차를 코드로 검사하고 고친다. (목차, 교정 기록) 을 돌려준다.
 
     모델은 그럴듯한 제목을 지어내므로, 시작 문서가 코퍼스에 실제로 있는지·절끼리 겹치지 않는지·
     역할이 명단에 있는지·절 제목이 형식 단위가 아닌지를 여기서 본다. 고칠 수 없는 시작 문서는
     엉뚱한 문서로 바꾸지 않고 비워 둔다(서브에이전트가 스스로 고른다) — 수업 코드는 코퍼스 첫 문서로
     채웠는데, 그러면 질문과 무관한 문서가 배정된다.
+
+    배정은 세 번에 나눠 본다.
+      ① 이름 맞추기 — 모델이 적은 제목을 코퍼스 제목으로. 못 맞추면 엉뚱한 문서로 바꾸지 않고 뺀다.
+      ② 겹침 — 두 절이 같은 문서를 원하면 절 제목 · 지시에 그 사람 이름이 나오는 절에 두고, 없으면 먼저 적은 절에.
+         (처음엔 무조건 먼저 적은 절이 가졌다 — 뒤 절이 사람 이름을 달고 있어도 빼앗겼다.)
+      ③ 시대 — 절 제목에 기간(1951-2000)이 있으면 공식 수상 연도로 검사해, 기간 밖 수상자는 맞는 시대 절로
+         옮기고 맞는 절이 없으면 뺀다. 코디네이터는 옐리네크(2004)를 「1951-2000」에 넣는 일을 되풀이했다.
     """
-    fixes, toc, taken = [], [], set()
+    years = AWARD_YEARS if years is None else years
+    cap = cfg.get("담당문서_상한", 6)
+    fixes, rows = [], []
     items = [i for i in obj.get("목차", []) if isinstance(i, dict)][:cfg["절수"]]
     total = cfg["절수"] * cfg["절예산_글자"]
     budgets = allocate_budget([i.get("비중", 2) for i in items], total, cfg["절예산_최소비율"])
@@ -224,28 +246,70 @@ def validate_plan(obj, docs, roster, cfg, switches, shared=SHARED):
         elif role not in roster:
             fixes.append(f"«{title}» 역할 '{role}' 이 명단에 없어 '{cfg['기본역할']}' 로 바꿈")
             role = cfg["기본역할"]
-        seed, territory = "", []
+        row = {"절": title, "지시": str(item.get("지시") or "").strip(), "역할": role, "예산": budget,
+               "원함": [], "시작": None}
         if switches["배정"]:
             asked = str(item.get("시작문서") or "")
-            wanted = [asked] + [str(x) for x in (item.get("담당문서") or []) if str(x) != asked]
-            for i, name in enumerate(wanted):
+            names = [asked] + [str(x) for x in (item.get("담당문서") or []) if str(x) != asked]
+            for i, name in enumerate(names):
+                if not name.strip():
+                    continue
+                kind = "시작" if i == 0 else "담당"
                 found = resolve_title(name, docs)
                 if found is None:
-                    fixes.append(f"«{title}» {'시작' if i == 0 else '담당'}문서 '{name}' 가 코퍼스에 없어 뺌")
-                elif found in taken:
-                    fixes.append(f"«{title}» {'시작' if i == 0 else '담당'}문서 '{found}' 가 다른 절과 겹쳐 뺌 (구역 겹침)")
-                elif found not in territory:
-                    if found != name:
-                        fixes.append(f"«{title}» '{name}' → '{found}' 로 맞춤")
-                    territory.append(found)
-                    if found not in shared:        # 공용 서가는 여러 절이 함께 쓴다
-                        taken.add(found)
-            territory = territory[:cfg.get("담당문서_상한", 6)]
-            seed = territory[0] if territory else ""
-            if territory and resolve_title(asked, docs) != seed:
-                fixes.append(f"«{title}» 시작문서를 담당문서 첫 건 '{seed}' 로 대신함")
-        toc.append({"절": title, "지시": str(item.get("지시") or "").strip(), "역할": role,
-                    "시작문서": seed, "담당문서": territory, "예산": budget})
+                    fixes.append(f"«{title}» {kind}문서 '{name}' 가 코퍼스에 없어 뺌")
+                    continue
+                if i == 0:
+                    row["시작"] = found
+                if found in row["원함"]:
+                    continue
+                if found != name:                          # '한강' → '한강 (작가)', 카드 줄을 베껴 온 경우
+                    fixes.append(f"«{title}» '{name}' → '{found}' 로 맞춤")
+                row["원함"].append((found, kind))
+        rows.append(row)
+
+    # ② 겹침 — 공용 서가는 여러 절이 함께 쓴다
+    claims = {}
+    for k, row in enumerate(rows):
+        for d, _ in row["원함"]:
+            if d not in shared:
+                claims.setdefault(d, []).append(k)
+    owner = {d: max(ks, key=lambda k: (fit(rows[k]["절"] + " " + rows[k]["지시"], d), -k))
+             for d, ks in claims.items()}
+    for k, row in enumerate(rows):
+        row["구역"] = []
+        for d, kind in row["원함"]:
+            if d in shared or owner[d] == k:
+                row["구역"].append(d)
+            else:
+                fixes.append(f"«{row['절']}» {kind}문서 '{d}' 가 «{rows[owner[d]]['절']}» 와 겹쳐 그쪽에 둠 (구역 겹침)")
+
+    # ③ 시대 — 기간 밖 수상자는 맞는 시대 절로
+    spans = [era_range(r["절"]) for r in rows]
+    for k, row in enumerate(rows):
+        if not spans[k]:
+            continue
+        lo, hi = spans[k]
+        for d in [d for d in row["구역"] if d in years]:
+            y = int(years[d][0])
+            if lo <= y <= hi:
+                continue
+            row["구역"].remove(d)
+            to = next((j for j, sp in enumerate(spans) if sp and sp[0] <= y <= sp[1] and j != k), None)
+            if to is not None and d not in rows[to]["구역"] and len(rows[to]["구역"]) < cap:
+                rows[to]["구역"].append(d)
+                fixes.append(f"«{row['절']}» '{d}'({y}년 수상)는 기간 {lo}-{hi} 밖 → «{rows[to]['절']}» 로 옮김 (시대 불일치)")
+            else:
+                fixes.append(f"«{row['절']}» '{d}'({y}년 수상)는 기간 {lo}-{hi} 밖이라 뺌 (시대 불일치)")
+
+    toc = []
+    for row in rows:
+        territory = row["구역"][:cap]
+        seed = territory[0] if territory else ""
+        if territory and row["시작"] != seed:
+            fixes.append(f"«{row['절']}» 시작문서를 담당문서 첫 건 '{seed}' 로 대신함")
+        toc.append({"절": row["절"], "지시": row["지시"], "역할": row["역할"],
+                    "시작문서": seed, "담당문서": territory, "예산": row["예산"]})
     return toc, fixes
 
 

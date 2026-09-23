@@ -23,10 +23,11 @@ metrics.py           지표 — 정답표를 쓰지 않는다 (신호 · 경보)
 titles.py            문서 제목 맞추기 규칙 — graph(인용 검사)와 metrics(근거율)가 같이 쓴다
 baseline.py          혼자 하는 대조군 (짝 팀 실행이 실제로 읽은 만큼 예산)
 ablation.py          스위치를 하나씩 끄고 재는 실험
+plan_check.py        기획만 여러 번 돌려 목차가 얼마나 흔들리는지 재는 실험 (기획을 고칠 때 먼저 쓴다)
 app.py               데모 (streamlit) · .streamlit/config.toml 은 화면 테마
 compare.py           나란히 읽기 화면 (사람이 판단)
 make_screenshots.py  데모 화면 캡처
-output/              runs.jsonl · ablation.json · ablation-1.json · reports/ · compare/
+output/              runs.jsonl · ablation.json · ablation-1.json · plans.jsonl · reports/ · compare/
 docs/                reading-notes.md (사람의 판단과 실패 추적) · screenshots/
 tests/               pytest — 가짜 모델(tests/fakes.py)로 네트워크 없이
 ```
@@ -37,7 +38,7 @@ tests/               pytest — 가짜 모델(tests/fakes.py)로 네트워크 �
 python3.14 -m venv .venv
 .venv/bin/pip install -r requirements.txt   # 설치된 정확한 버전은 requirements-lock.txt
 cp .env.example .env                        # OPENAI_API_KEY 채우기 (.env 는 저장소에 올라가지 않는다)
-.venv/bin/pytest -q                         # 87개 — LLM · 네트워크 없이 돈다
+.venv/bin/pytest -q                         # 91개 — LLM · 네트워크 없이 돈다
 ```
 
 ## 실행
@@ -82,6 +83,15 @@ cp .env.example .env                        # OPENAI_API_KEY 채우기 (.env 는
 - `output/ablation.json` — **ablation-2**(최종): 기본 · 역할끔 · 배정끔 · 배정끔+재촉 · 구역끔 · 담당구역켬 · 재위임끔 · 혼자
 - `output/ablation-1.json` — ablation-1(기록용): 이 실험에서 후보 목록이 앞 80건만 보이던 버그를 찾았고,
   구역 기본값을 수업 방식으로 바꿨다. 그래서 최종 결론에는 쓰지 않는다.
+
+기획만 따로 잴 때(전 구간보다 훨씬 싸다 — 한 번에 LLM 1~2회):
+
+```bash
+.venv/bin/python plan_check.py --label 전        # Q2·Q5·Q8 × 5회 → output/plans.jsonl · plans.json
+.venv/bin/python plan_check.py --summarize-only  # LLM 없이 표만
+```
+
+재기획 · 빈 절 제외 · 시대불일치 · 구역겹침 · 배정실패 · 목차 일관성(같은 질문 5회의 담당문서 겹침) · 코디 글자를 센다.
 
 지표는 [metrics.py](metrics.py) 의 `METRICS` 표에 이름 · 종류(신호/경보) · 보는 장치 · 한 줄 설명이 있다.
 저장된 실행 기록만으로 다시 계산되므로 LLM 없이 비교할 수 있다.

@@ -8,10 +8,15 @@ measure(run, corpus) 는 저장된 실행 기록 하나만 있으면 계산된�
   · 경보 — 0 이어야 한다. 0 이 아니면 어느 장치가 고장 났는지 바로 가리킨다.
 지표마다 '어느 장치를 보는 신호인지'를 METRICS 에 적어 둔다. 한 줄로 설명이 안 되는 지표는 넣지 않았다.
 """
+import json
 import re
 from collections import Counter
+from pathlib import Path
 
-from titles import resolve_title, split_refs
+from titles import era_mismatches, resolve_title, split_refs
+
+_YEARS = Path(__file__).parent / "data" / "award_years.json"
+AWARD_YEARS = json.loads(_YEARS.read_text(encoding="utf-8"))["연도"] if _YEARS.exists() else {}
 
 # 이름: (종류, 보는 장치, 한 줄 설명)
 METRICS = {
@@ -36,6 +41,7 @@ METRICS = {
     "구역겹침":      ("경보", "기획",   "코디네이터가 두 절에 같은 문서를 배정하려 한 건수(코드가 막았다)"),
     "배정실패":      ("경보", "기획",   "코디네이터가 코퍼스에 없는 제목을 배정한 건수(코드가 막았다)"),
     "재기획":        ("경보", "기획",   "목차 문제로 코디네이터에게 다시 짜게 한 횟수"),
+    "시대불일치":    ("경보", "기획",   "최종 목차의 시대 절(1951-2000)에 그 기간 밖에 상을 받은 수상자가 남은 수"),
 }
 
 
@@ -117,6 +123,7 @@ def measure(run, corpus):
         "구역겹침": sum("구역 겹침" in f for f in fixes),
         "배정실패": sum("코퍼스에 없어" in f for f in fixes),
         "재기획": sum(c.get("단계") == "기획(재)" for c in cost),
+        "시대불일치": len(era_mismatches(plan.get("목차", []), AWARD_YEARS)),
     }
     detail = {"문장수": len(sents), "근거붙은문장": len(grounded), "인용수": len(cited_all),
               "절간중복문서": overlap_docs, "읽고안쓴": sorted(read_any - set(use)),

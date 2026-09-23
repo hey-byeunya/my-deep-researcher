@@ -55,6 +55,15 @@ def test_alarms_pick_only_nonzero_alarms():
     assert all(metrics.METRICS[k][0] == "경보" for k in a)
 
 
+def test_era_mismatch_alarm_counts_the_final_plan():
+    """교정 기록이 아니라 최종 목차에서 센다 — 그래야 검사가 없던 예전 실행을 다시 재도 놓친 건수가 나온다."""
+    toc = [{"절": "중기 (1951-2000)", "담당문서": ["토니 모리슨", "도리스 레싱", "엘프리데 옐리네크"]},
+           {"절": "최근 수상자", "담당문서": ["한강 (작가)"]}]                    # 기간이 없는 절은 보지 않는다
+    m, _ = metrics.measure(run_record("", [], [], plan={"교정": [], "목차": toc}), CORPUS)
+    assert m["시대불일치"] == 2
+    assert metrics.alarms(m) == {"시대불일치": 2}
+
+
 def test_every_metric_is_documented():
     m, _ = metrics.measure(run_record("", [], []), CORPUS)
     assert set(m) == set(metrics.METRICS)

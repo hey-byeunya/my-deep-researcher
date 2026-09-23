@@ -2,6 +2,7 @@
 import json
 
 import graph
+import titles
 
 SW = dict(graph.SWITCHES)
 
@@ -111,6 +112,41 @@ def test_cards_show_award_year_in_order():
     assert text.index("쉴리 프뤼돔 ｜ 1901") < text.index("한강 (작가) ｜ 2024")  # 연도순
     assert text.index("[공용 서가") < text.index("[수상자")
 
+
+
+# ─── 기획 강화 — 겹친 문서는 이름이 나오는 절로 · 시대 검사 ─────────
+
+def test_overlap_goes_to_section_naming_the_person():
+    """겹친 문서는 먼저 적은 절이 아니라 제목 · 지시에 그 사람 이름이 나오는 절에 둔다."""
+    obj = {"목차": [
+        {"절": "초기 여성 수상자", "지시": "x", "역할": "작품 담당", "담당문서": ["셀마 라겔뢰프", "펄 S. 벅"]},
+        {"절": "펄 S. 벅과 중국", "지시": "x", "역할": "작품 담당", "담당문서": ["펄 S. 벅", "대지 (소설)"]}]}
+    toc, fixes = graph.validate_plan(obj, graph.DOCS, graph.ROSTER, graph.CONFIG, SW)
+    assert toc[0]["담당문서"] == ["셀마 라겔뢰프"]
+    assert toc[1]["담당문서"] == ["펄 S. 벅", "대지 (소설)"]
+    assert any("«펄 S. 벅과 중국» 와 겹쳐 그쪽에 둠 (구역 겹침)" in f for f in fixes)
+
+
+def test_era_sections_keep_only_laureates_of_that_period():
+    """「1951-2000」에 옐리네크(2004)를 넣으면 「2001-2024」로 옮기고, 맞는 절이 없으면 뺀다."""
+    obj = {"목차": [
+        {"절": "중기 (1951-2000)", "지시": "x", "역할": "수상 담당", "담당문서": ["토니 모리슨", "엘프리데 옐리네크"]},
+        {"절": "최근 (2001-2024)", "지시": "x", "역할": "수상 담당", "담당문서": ["한강 (작가)"]},
+        {"절": "초기 (1909-1950)", "지시": "x", "역할": "수상 담당", "담당문서": ["셀마 라겔뢰프", "앨리스 먼로"]}]}
+    toc, fixes = graph.validate_plan(obj, graph.DOCS, graph.ROSTER, graph.CONFIG, SW)
+    assert toc[0]["담당문서"] == ["토니 모리슨"]
+    assert toc[1]["담당문서"] == ["한강 (작가)", "엘프리데 옐리네크", "앨리스 먼로"]   # 먼로(2013)도 최근으로
+    assert toc[2]["담당문서"] == ["셀마 라겔뢰프"]
+    assert sum("시대 불일치" in f for f in fixes) == 2
+    assert titles.era_mismatches(toc, graph.AWARD_YEARS) == []           # 지표의 시대불일치 경보도 0
+
+
+def test_era_mismatch_without_home_section_is_dropped():
+    obj = {"목차": [{"절": "초기 (1909-1950)", "지시": "x", "역할": "수상 담당",
+                     "담당문서": ["셀마 라겔뢰프", "한강 (작가)"]}]}
+    toc, fixes = graph.validate_plan(obj, graph.DOCS, graph.ROSTER, graph.CONFIG, SW)
+    assert toc[0]["담당문서"] == ["셀마 라겔뢰프"]
+    assert any("밖이라 뺌 (시대 불일치)" in f for f in fixes)
 
 def test_zones_respect_switch():
     toc = [{"절": "A", "시작문서": "데미안", "담당문서": ["데미안"]},
