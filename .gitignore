@@ -9,3 +9,6 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# 위키백과 API 응답 캐시 (다시 모을 때 재사용)
+.cache/
