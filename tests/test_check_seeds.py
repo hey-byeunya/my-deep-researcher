@@ -1,5 +1,5 @@
 """check_seeds.compare 가 세 갈래로 제대로 나누는지 (네트워크 없이)."""
-from check_seeds import _norm, compare, pair_by_name
+from check_seeds import _norm, award_years, compare, pair_by_name
 
 
 def test_compare_splits_three_ways():
@@ -30,3 +30,9 @@ def test_pair_by_name_rescues_wrong_official_qid():
     pairs, left_official, left_seeds = pair_by_name(no_ko, extra, english)
     assert [p["kowiki"] for p in pairs] == ["장마리 귀스타브 르 클레지오"]
     assert left_official == [] and left_seeds == ["엉뚱한 문서"]
+
+
+def test_award_years_include_name_paired():
+    result = {"일치": [{"kowiki": "한강 (작가)", "연도": ["2024"]}],
+              "공식ID_의심": [{"kowiki": "장마리 귀스타브 르 클레지오", "연도": ["2008"]}]}
+    assert award_years(result) == {"장마리 귀스타브 르 클레지오": ["2008"], "한강 (작가)": ["2024"]}

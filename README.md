@@ -39,6 +39,14 @@ cp .env.example .env        # OPENAI_API_KEY 채우기
 현재 코퍼스: 문서 176건(수상자 122 · 작품 47 · 공통 7), 602,186자, 359,510토큰 —
 gpt-4o-mini 창(128K 토큰)의 2.8배.
 
+### 2. 파이프라인
+
+```bash
+.venv/bin/python graph.py --question Q5 --plan-only   # 기획만 — 목차 · 역할 · 담당문서 · 예산 확인
+.venv/bin/python graph.py --question Q5               # 전 구간
+.venv/bin/python graph.py --question Q5 --no-구역      # 스위치 끄기 (역할 · 배정 · 구역 · 재위임)
+```
+
 _(이후 단계 실행 방법은 구현하면서 채운다)_
 
 ## 자료 출처

@@ -23,6 +23,7 @@ from collect_corpus import SEEDS, _fetch
 NOBEL_API = "https://api.nobelprize.org/2.1/laureates"
 WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 OUT = Path(__file__).parent / "data" / "seed_check.json"
+YEARS_OUT = Path(__file__).parent / "data" / "award_years.json"
 
 def official_laureates():
     """노벨상 공식 API 의 문학상 수상자 전원. 한 사람이 두 번 받은 경우는 없지만 연도는 목록으로 둔다."""
@@ -116,6 +117,12 @@ def compare(official, ko, seeds):
     return {"일치": matched, "추가_후보": to_add, "한국어_문서_없음": no_ko, "공식_명단에_없음": extra}
 
 
+def award_years(result):
+    """한국어 문서 제목 -> 수상 연도 목록. 공식 명단과 짝지어진 수상자만 (graph.py 의 문서 카드가 쓴다)."""
+    rows = result["일치"] + result["공식ID_의심"]
+    return dict(sorted(((r["kowiki"], r["연도"]) for r in rows), key=lambda kv: (kv[1], kv[0])))
+
+
 def main():
     official = official_laureates()
     ko = kowiki_titles([l["wikidata"] for l in official])
@@ -142,7 +149,11 @@ def main():
 
     OUT.write_text(json.dumps({"_점검일": date.today().isoformat(), "_출처": NOBEL_API,
                                **result}, ensure_ascii=False, indent=1), encoding="utf-8")
+    YEARS_OUT.write_text(json.dumps({"_출처": NOBEL_API, "_점검일": date.today().isoformat(),
+                                     "연도": award_years(result)}, ensure_ascii=False, indent=1),
+                         encoding="utf-8")
     print(f"\n저장: {OUT}  (SEEDS 는 바꾸지 않았다)")
+    print(f"저장: {YEARS_OUT}  (수상 연도 {len(result['일치']) + len(result['공식ID_의심'])}명 — 문서 카드에 쓰인다)")
     return 0 if not (result["추가_후보"] or result["공식_명단에_없음"]) else 1
 
 
