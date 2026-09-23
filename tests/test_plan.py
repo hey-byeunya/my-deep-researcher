@@ -138,8 +138,9 @@ def test_fanout_sends_one_per_section():
 # ─── 전 구간(빈 노드 포함)이 오류 없이 도는가 ─────────────────
 
 def test_run_end_to_end_with_fake_llm(monkeypatch):
+    from fakes import FakeLLM
     reply = plan_obj({"시작문서": "셀마 라겔뢰프"}, {"시작문서": "한강 (작가)"})
-    monkeypatch.setattr(graph, "_invoke", fake_llm(reply))
+    monkeypatch.setattr(graph, "_invoke", FakeLLM(plan=reply))
     out = graph.run("여성 수상자들의 흐름은?")
     assert len(out["plan"]["목차"]) == 2
     assert len(out["sections"]) == 2

@@ -18,6 +18,7 @@ import operator
 import os
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Annotated, TypedDict
@@ -86,17 +87,19 @@ class Research(TypedDict):
 # ─── LLM 호출 ────────────────────────────────────────────────────
 
 _llm = None
+_llm_lock = threading.Lock()   # 서브에이전트들이 동시에 첫 호출을 해도 모델 객체는 하나만 만든다
 TRANSIENT = ("RateLimit", "APIConnection", "Timeout", "InternalServer")
 
 
 def _invoke(messages):
     """실제 모델 호출. 테스트는 이 함수를 가짜로 바꿔 끼운다."""
     global _llm
-    if _llm is None:
-        from langchain_openai import ChatOpenAI
-        if not os.getenv("OPENAI_API_KEY", "").startswith("sk-"):
-            sys.exit("OPENAI_API_KEY 가 없다 — .env.example 을 .env 로 복사해 채운다")
-        _llm = ChatOpenAI(model=CONFIG["모델"], temperature=CONFIG["온도"], timeout=90, max_retries=0)
+    with _llm_lock:
+        if _llm is None:
+            from langchain_openai import ChatOpenAI
+            if not os.getenv("OPENAI_API_KEY", "").startswith("sk-"):
+                sys.exit("OPENAI_API_KEY 가 없다 — .env.example 을 .env 로 복사해 채운다")
+            _llm = ChatOpenAI(model=CONFIG["모델"], temperature=CONFIG["온도"], timeout=90, max_retries=0)
     for attempt in range(4):
         try:
             return _llm.invoke(messages).content
@@ -119,7 +122,7 @@ def ask(system, user, who, section="", stage=""):
 def jload(raw, default):
     """모델 응답에서 JSON 덩어리를 꺼낸다. 깨졌으면 default."""
     try:
-        m = re.search(r"\{.*\}" if isinstance(default, dict) else r"\[.*\]", raw, re.S)
+        m = re.search(r"\[.*\]" if isinstance(default, list) else r"\{.*\}", raw, re.S)
         return json.loads(m.group(0))
     except Exception:
         return default
@@ -291,6 +294,16 @@ def plan(s):
         fixes.append("목차를 읽지 못해 질문 하나짜리 절로 대신함")
         toc = [{"절": "질문 전체", "지시": s["question"], "역할": CONFIG["기본역할"], "시작문서": "",
                 "담당문서": [], "예산": CONFIG["절수"] * CONFIG["절예산_글자"]}]
+    if sw["배정"] and any(not t["담당문서"] for t in toc) and any(t["담당문서"] for t in toc):
+        # 재기획 뒤에도 구역이 빈 절(대개 '비교·종합' 같은 형식 절)은 파견하지 않는다. 격리된 서브에이전트는
+        # 남의 절 자료를 볼 수 없어서 그런 절은 쓸 재료가 없다. 그 예산은 남은 절에 비율대로 나눠 준다.
+        empty = [t["절"] for t in toc if not t["담당문서"]]
+        total = sum(t["예산"] for t in toc)
+        toc = [t for t in toc if t["담당문서"]]
+        kept = sum(t["예산"] for t in toc)
+        for t in toc:
+            t["예산"] = int(t["예산"] * total / kept)
+        fixes.append(f"구역이 빈 절 {len(empty)}개는 파견하지 않고 예산을 나눔: «{'», «'.join(empty)}»")
     p = {"제목": obj.get("제목") or s["question"], "목차": toc, "교정": fixes,
          "배치": list(range(len(toc))), "바퀴": 1}
     seeds = " · ".join(f"{t['역할']}→«{t['시작문서'] or '자율'}»+{max(len(t.get('담당문서', [])) - 1, 0)}건"
@@ -326,12 +339,16 @@ def zones(plan_toc, done, mine_index, switches, shared=SHARED):
     return sorted(avoid - shared)
 
 
-def latest_sections(sections):
-    """절 제목별로 가장 최근에 채택된 원고."""
+def chosen_sections(sections, adopted=None):
+    """절 제목별로 채택된 원고. adopted({절: 바퀴})가 없으면 가장 최근 원고."""
     out = {}
     for sec in sections:
-        if sec.get("채택", True):
-            out[sec["절"]] = sec
+        name = sec["절"]
+        if adopted and name in adopted:
+            if sec["바퀴"] == adopted[name]:
+                out[name] = sec
+        else:
+            out[name] = sec
     return out
 
 
@@ -340,7 +357,8 @@ def fanout(s):
     idxs = s["plan"]["배치"]
     if not idxs:
         return "review"
-    toc, done = s["plan"]["목차"], latest_sections(s["sections"])
+    toc = s["plan"]["목차"]
+    done = chosen_sections(s["sections"], s["plan"].get("채택"))
     return [Send("researcher", {
         "question": s["question"], "switches": s["switches"],
         "task": {**toc[i], "번호": i, "바퀴": s["plan"]["바퀴"],
@@ -348,23 +366,239 @@ def fanout(s):
         "prior": done.get(toc[i]["절"], {})}) for i in idxs]
 
 
-# ─── ③ 서브에이전트 · ④ 점검 · ⑤ 종합 — S4·S5 에서 채운다 ────────────────
+# ─── ③ 서브에이전트 ─────────────────────────────────────────────
+# 서브에이전트는 자기 절 하나만 안다. 코디네이터가 준 역할·지시·시작문서·담당문서·예산·피하기
+# 목록과, 재위임이면 지난 바퀴의 자기 원고뿐이다. 읽은 원문은 여기(메모)에 남고 위로는 원고만 올라간다.
+
+MIN_READ = 300   # 남은 예산이 이보다 적으면 더 읽지 않는다 (앞부분 몇 줄만 읽고 판단하는 일을 막는다)
+
+
+def role_line(t):
+    return f"너는 {t['역할']}이다. {ROSTER.get(t['역할'], ROSTER[CONFIG['기본역할']])}."
+
+
+def candidates(read_pos, avoid, docs=None, links=None):
+    """다음에 읽을 후보. ① 읽은 문서가 가리키는 문서 ② 덜 읽은 문서(이어 읽기) ③ 없으면 나머지 전부.
+
+    어느 경우에도 피하기 목록(남의 구역)은 풀지 않는다. 수업 코드는 ③ 까지 비면(구역 밖 문서를 전부
+    읽으면) 마지막으로 구역을 풀었는데, 그러면 다른 절과 같은 문서를 읽게 된다. 이 코퍼스에서는 한 절이
+    한 바퀴에 3~5건을 읽고 구역 밖에 160건쯤 남아 그 단계에 닿지 않으므로 실제 차이는 거의 없다.
+    ③ 에서 수상자는 수상 연도순으로, 연도를 붙여 준다(수업 코드는 코퍼스 순서대로 앞 60건).
+    """
+    docs, links = docs or DOCS, links or LINKS
+    blocked = set(avoid)
+    unfinished = [d for d, pos in read_pos.items() if pos < len(docs[d])]
+    frontier = sorted({x for d in read_pos for x in links.get(d, []) if x in docs}
+                      - set(read_pos) - blocked)
+    if frontier or unfinished:
+        return frontier, unfinished
+    rest = [d for d in docs if d not in read_pos and d not in blocked]
+    rest.sort(key=lambda d: (KINDS.get(d) != "수상자", AWARD_YEARS.get(d, ["9999"])[0], d))
+    return rest, []
+
+
+def label(d):
+    year = AWARD_YEARS.get(d)
+    return f"{d} ({'·'.join(year)}년 수상)" if year else d
+
+
+def pick_next(t, read_pos, avoid, costs):
+    """링크 후보 중 하나를 모델이 고른다. 더 읽을 것이 없으면 None."""
+    cand, unfinished = candidates(read_pos, avoid)
+    if not cand and not unfinished:
+        return None
+    lines = [f"- {label(d)}" for d in cand[:80]]
+    lines += [f"- {d} (이어 읽기: {read_pos[d]:,}/{len(DOCS[d]):,}자 읽음)" for d in unfinished]
+    raw, c = ask(f"{role_line(t)} 맡은 절을 쓰려고 다음에 읽을 문서를 후보에서 정확히 하나 고른다. "
+                 "후보에 쓸 만한 것이 없으면 그만둔다.\n"
+                 'JSON 으로만: {"문서": "후보 제목 그대로"} 또는 {"문서": null}',
+                 f"[맡은 절] {t['절']}\n[지시] {t['지시']}\n"
+                 f"[이미 읽음] {', '.join(read_pos) or '없음'}\n[후보]\n" + "\n".join(lines),
+                 "서브", t["절"], "다음문서")
+    costs.append(c)
+    pick = resolve_title(str(jload(raw, {}).get("문서") or ""), DOCS)
+    if pick in cand or pick in unfinished:
+        return pick
+    return None
+
+
+def read_chunk(t, doc, start, size, costs):
+    """문서의 [start, start+size) 구간을 읽고 지시에 관련된 것만 간추린다."""
+    chunk = DOCS[doc][start:start + size]
+    part = "" if start == 0 and start + size >= len(DOCS[doc]) else f" · {start:,}~{start + len(chunk):,}자 구간"
+    raw, c = ask(f"{role_line(t)} 아래 문서 조각을 읽고 지시에 관련된 사실만 여섯 문장 이내로 간추린다. "
+                 "사람·작품·연도·사건 이름은 문서에 적힌 그대로 옮긴다. 관련이 없으면 '관련 없음'이라고만 답한다.\n"
+                 f"[지시] {t['지시']}",
+                 f"[문서: {doc}{part}]\n{chunk}", "서브", t["절"], "읽기")
+    costs.append(c)
+    return raw.strip(), len(chunk)
+
+
+def explore(t, prior):
+    """예산(글자)만큼 읽는다. 순서: 시작문서 → 담당문서 → 모델이 고른 후보(링크 · 이어 읽기)."""
+    read_pos = dict(prior.get("읽은위치", {}))
+    notes = [list(n) for n in prior.get("메모", [])]
+    avoid = set(t.get("피하기") or [])
+    budget, spent, costs, visits = t["예산"], 0, [], []
+    queue = [d for d in [t.get("시작문서")] + list(t.get("담당문서") or []) if d and d in DOCS]
+    queue = list(dict.fromkeys(queue))
+    cap = CONFIG["문서당_읽기상한"]
+    while budget - spent >= MIN_READ:
+        # 배정받은 문서는 한 조각씩 먼저 다 훑고(아직 안 읽은 것부터), 그다음에 이어 읽는다.
+        # 긴 문서 하나를 끝까지 파느라 나머지 담당문서를 못 읽는 일을 막는다.
+        doc = next((d for d in queue if d not in read_pos), None)
+        doc = doc or next((d for d in queue if read_pos[d] < len(DOCS[d])), None)
+        if doc is None:
+            doc = pick_next(t, read_pos, avoid, costs)
+            if doc is None:
+                break
+        start = read_pos.get(doc, 0)
+        summary, n = read_chunk(t, doc, start, min(cap, budget - spent), costs)
+        read_pos[doc] = start + n
+        spent += n
+        visits.append([t["절"], doc, n, t["바퀴"]])
+        if not summary.startswith("관련 없음"):
+            notes.append([doc, summary])
+    return read_pos, notes, spent, costs, visits
+
+
+WRITE_SYSTEM = """{role} 아래 자료만 근거로 보고서의 한 절을 쓴다.
+- 여섯 문장 이상 열두 문장 이하, 600자 이상.
+- 문장 끝마다 근거가 된 문서를 «문서 제목» 으로 붙인다. «» 안에는 [근거로 쓸 수 있는 문서] 에 있는
+  제목만 그대로 넣는다. 절 제목이나 작품 이름을 «» 안에 넣지 않는다.
+- 작품·책 이름은 《》 로 쓴다 (예: 《채식주의자》). 《》 는 근거 표시가 아니다.
+- 자료에 없는 내용은 쓰지 않는다. 모르는 것은 '자료에서 확인되지 않는다'고 적는다.
+- 지시를 자료로 다 채우지 못했으면 충분을 false 로 하고, 무엇이 비었는지 부족에 한 문장으로 적는다.
+JSON 으로만: {{"본문": "...", "충분": true, "부족": ""}}"""
+
+
+def write(t, notes, costs, prior_text="", feedback=""):
+    material = "\n\n".join(f"[자료: {d}]\n{n}" for d, n in notes) or "(읽은 자료 없음)"
+    allowed = ", ".join(dict.fromkeys(d for d, _ in notes)) or "(없음)"
+    before = f"\n\n[지난 바퀴에 쓴 원고 — 고쳐 쓰되 맞는 내용은 살린다]\n{prior_text}" if prior_text else ""
+    fix = f"\n\n[고칠 점]\n{feedback}" if feedback else ""
+    raw, c = ask(WRITE_SYSTEM.format(role=role_line(t)),
+                 f"[맡은 절] {t['절']}\n[지시] {t['지시']}\n[근거로 쓸 수 있는 문서] {allowed}\n\n"
+                 f"[자료]\n{material}{before}{fix}",
+                 "서브", t["절"], "집필(재)" if feedback else "집필")
+    costs.append(c)
+    obj = jload(raw, None)
+    if isinstance(obj, dict) and "본문" in obj:
+        text = str(obj.get("본문") or "").strip()
+    else:                         # JSON 자체가 깨졌을 때만 날것에서 본문을 건진다
+        obj = {"충분": False, "부족": "원고 형식이 깨짐"}
+        text = re.sub(r'^\s*\{?\s*"?본문"?\s*:\s*"?', "", raw, flags=re.S)
+        text = re.split(r'"\s*,\s*"충분"', text)[0][:3000].strip()
+    return {"본문": text, "충분": bool(obj.get("충분")), "부족": str(obj.get("부족") or "").strip()}
+
+
+def check_citations(text, read):
+    """«…» 인용을 뽑아 정식 제목으로 맞추고, 읽지 않은 문서·코퍼스에 없는 이름을 가른다.
+
+    코드가 잡는 것은 여기까지다. 읽은 문서를 엉뚱한 문장에 붙인 것은 사람이 원문과 대조해야 잡힌다.
+    """
+    raw = re.findall(r"«([^»]+)»", text)
+    cited, unknown = [], []
+    for c in raw:
+        for part in re.split(r"\s*[,·]\s*", c):      # «A, B» 처럼 한 괄호에 둘을 넣는 경우
+            title = resolve_title(part, DOCS)
+            (cited if title else unknown).append(title or part)
+    return {"인용": cited, "허위인용": sorted({c for c in cited if c not in read}),
+            "없는문서인용": sorted(set(unknown))}
+
 
 def researcher(s):
-    t = s["task"]
-    return {"sections": [{"절": t["절"], "번호": t["번호"], "역할": t["역할"], "시작문서": t["시작문서"],
-                          "예산": t["예산"], "피하기": t["피하기"], "바퀴": t["바퀴"],
-                          "읽은문서": [], "본문": "(빈 노드 — S4 에서 채운다)", "충분": True}],
-            "log": [f"③ 조사   «{t['절']}» (빈 노드)"]}
+    """그래프 없이 직접 불러도 된다 — task 와 prior 만 있으면 된다."""
+    t, prior = s["task"], s.get("prior") or {}
+    read_pos, notes, spent, costs, visits = explore(t, prior)
+    draft = write(t, notes, costs, prior.get("본문", "") if prior else "")
+    cites = check_citations(draft["본문"], set(read_pos))
+    rewrote = False
+    if notes and draft["본문"] and not cites["인용"]:
+        # 자료를 읽고도 «» 근거 표시를 통째로 빠뜨린 원고는, 읽기 없이 집필만 한 번 다시 시킨다.
+        # 재위임(더 읽으러 다시 내보내기)이 아니다 — 재위임은 스스로 부족하다고 신고한 절만 한다.
+        again = write(t, notes, costs, prior.get("본문", "") if prior else "",
+                      feedback=f"원고에 «» 근거 표시가 하나도 없다. 문장 끝마다 [근거로 쓸 수 있는 문서] 의 "
+                               f"제목을 «제목» 으로 붙여 다시 써라.\n[지난 원고]\n{draft['본문']}")
+        again_cites = check_citations(again["본문"], set(read_pos))
+        if again_cites["인용"] and not again_cites["허위인용"] and not again_cites["없는문서인용"]:
+            draft, cites, rewrote = again, again_cites, True
+    sec = {"절": t["절"], "번호": t["번호"], "바퀴": t["바퀴"], "역할": t["역할"],
+           "시작문서": t.get("시작문서", ""), "담당문서": t.get("담당문서", []),
+           "피하기": t.get("피하기", []), "지시": t["지시"],
+           "예산": t["예산"], "이번_읽은글자": spent,
+           "읽은문서": list(read_pos), "읽은위치": read_pos, "메모": notes,
+           **draft, **cites, "인용보강": rewrote}
+    mark = "충분" if sec["충분"] else f"부족({sec['부족'][:24]})"
+    mark += " · 인용 보강 재집필" if rewrote else ""
+    warn = f" · ⚠ 허위인용 {len(sec['허위인용'])}" if sec["허위인용"] else ""
+    return {"sections": [sec], "visited": visits, "cost": costs,
+            "log": [f"   ③ {t['역할']} «{t['절'][:18]}» {len(visits)}회 읽기 · {spent:,}/{t['예산']:,}자 · "
+                    f"원고 {len(draft['본문'])}자 · 인용 {len(sec['인용'])}곳{warn} · {mark}"]}
+
+
+# ─── ④ 점검 ─────────────────────────────────────────────────────
+
+def keep_new(new, old):
+    """두 번째 원고를 받을지. (받는가, 이유).
+
+    무조건 덮어쓰면, 다시 쓰다가 인용을 빠뜨린 원고가 멀쩡한 첫 원고를 지운다. 그래서
+    ① 허위인용이나 없는 문서 인용이 하나라도 있으면 거절하고
+    ② 근거로 댄 서로 다른 문서 수가 줄었으면 거절하고
+    ③ 그 밖에는 받는다 (새로 읽은 자료가 더해진 원고이므로).
+    """
+    if new["허위인용"] or new["없는문서인용"]:
+        return False, "새 원고에 읽지 않았거나 없는 문서 인용"
+    n_new, n_old = len(set(new["인용"])), len(set(old["인용"]))
+    if n_new < n_old:
+        return False, f"근거 문서 {n_old}→{n_new}건으로 줄어듦"
+    return True, f"근거 문서 {n_old}→{n_new}건"
 
 
 def review(s):
-    return {"plan": {**s["plan"], "배치": []}, "log": ["④ 점검   (빈 노드)"]}
+    """자기신고로 부족하다고 한 절만 다시 보낸다. 두 번째 원고는 keep_new 규칙으로 받거나 버린다."""
+    p = s["plan"]
+    toc, wheel = p["목차"], p["바퀴"]
+    adopted, log = dict(p.get("채택", {})), []
+    for t in toc:
+        drafts = sorted((x for x in s["sections"] if x["절"] == t["절"]), key=lambda x: x["바퀴"])
+        if not drafts:
+            continue
+        newest = drafts[-1]
+        if t["절"] not in adopted:
+            adopted[t["절"]] = newest["바퀴"]
+        elif newest["바퀴"] != adopted[t["절"]]:
+            old = next(x for x in drafts if x["바퀴"] == adopted[t["절"]])
+            ok, why = keep_new(newest, old)
+            if ok:
+                adopted[t["절"]] = newest["바퀴"]
+            log.append(f"   ④ «{t['절'][:18]}» {newest['바퀴']}바퀴 원고 {'채택' if ok else '버림'} — {why}")
+    current = chosen_sections(s["sections"], adopted)
+    if not s["switches"]["재위임"]:
+        gaps, why = [], "재위임 끔"
+    elif wheel >= CONFIG["최대바퀴"]:
+        gaps, why = [], "바퀴 상한"
+    else:
+        gaps = [i for i, t in enumerate(toc) if not current.get(t["절"], {}).get("충분", True)]
+        why = "빈 칸 없음" if not gaps else ""
+    if not gaps:
+        log.append(f"④ 점검   {len(toc)}절 — 종합으로 ({why})")
+        return {"plan": {**p, "배치": [], "채택": adopted, "종료": why}, "log": log}
+    newtoc = [dict(t) for t in toc]
+    for i in gaps:
+        prev = current[toc[i]["절"]]
+        newtoc[i]["지시"] = (f"{toc[i]['지시']} (재위임: 지난번에 «{'», «'.join(prev['읽은문서']) or '없음'}» 를 "
+                             f"읽었지만 '{prev['부족'] or '근거가 모자랐다'}'. 그 빈 칸을 겨냥해 아직 안 본 문서를 찾아라)")
+    log.append(f"④ 점검   {len(toc)}절 중 부족 신고 {len(gaps)}절 — "
+               f"«{'», «'.join(toc[i]['절'][:14] for i in gaps)}» 재위임")
+    return {"plan": {**p, "목차": newtoc, "배치": gaps, "바퀴": wheel + 1, "채택": adopted}, "log": log}
 
 
 def route(s):
     return "more" if s["plan"]["배치"] else "done"
 
+
+# ─── ⑤ 종합 · ⑥ 측정 — S5 에서 채운다 ─────────────────────────────
 
 def synthesize(s):
     return {"report": "(빈 노드 — S5 에서 채운다)", "log": ["⑤ 종합   (빈 노드)"]}
