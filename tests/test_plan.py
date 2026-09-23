@@ -261,3 +261,29 @@ def test_planning_boost_switch_restores_submitted_rules(monkeypatch):
     n_off = len(seen)
     graph.run("질문", plan_only=True)
     assert seen[0] == seen[n_off]                                        # 첫 기획 호출의 입력이 글자까지 같다
+
+
+def test_replan_that_shrinks_owned_sections_is_refused(monkeypatch):
+    """문제 건수가 줄어도 수상자를 맡은 절이 줄어드는 재기획은 받지 않는다 (ablation-3 Q5 5회차).
+    기획보강을 끄면 제출본처럼 받는다."""
+    first = {"목차": [
+        {"절": "초기 (1909-1950)", "지시": "초기.", "역할": "수상 담당", "담당문서": ["셀마 라겔뢰프"]},
+        {"절": "중기 (1951-2000)", "지시": "중기.", "역할": "수상 담당", "담당문서": ["토니 모리슨"]},
+        {"절": "최근 (2001-2024)", "지시": "최근.", "역할": "수상 담당", "담당문서": ["한강 (작가)"]},
+        {"절": "주제 흐름", "지시": "주제가 어떻게 바뀌었나.", "역할": "작품 담당", "담당문서": ["없는 문서"]}]}
+    format_toc = {"목차": [
+        {"절": "시대적 배경", "지시": "배경.", "역할": "시대 담당", "담당문서": ["노벨 문학상", "노벨상"]},
+        {"절": "주요 주제", "지시": "주제.", "역할": "작품 담당", "담당문서": ["문학"]},
+        {"절": "작품", "지시": "작품.", "역할": "작품 담당", "담당문서": ["한강 (작가)"]}]}
+
+    def run(**sw):
+        replies = iter([first, format_toc])
+        monkeypatch.setattr(graph, "_invoke", lambda m: json.dumps(next(replies), ensure_ascii=False))
+        return graph.run("여성 수상자", plan_only=True, **sw)["plan"]
+
+    kept = run()
+    assert [t["절"] for t in kept["목차"]] == ["초기 (1909-1950)", "중기 (1951-2000)", "최근 (2001-2024)"]
+    assert any("3개 → 1개로 줄어 받지 않음" in f for f in kept["교정"])
+    assert all("주제가 어떻게 바뀌었나" in t["지시"] for t in kept["목차"])     # 빠진 절의 물음은 남은 절로
+    taken = run(기획보강=False)
+    assert [t["절"] for t in taken["목차"]] == ["시대적 배경", "주요 주제", "작품"]  # 제출본은 문제 수만 본다

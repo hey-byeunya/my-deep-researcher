@@ -55,7 +55,8 @@ SWITCHES = {
     "재촉": False,    # 켜면 서브에이전트가 그만 읽겠다고 할 때 남은 예산을 알리고 한 번 더 묻고, 그래도 못 고르면
                       # 지시문 단어와 가장 많이 겹치는 후보를 읽힌다(대조군과 같은 규칙). 배정끔 해석 보강용.
     "기획보강": True, # 끄면 제출본(ablation-2)의 기획으로 돌아간다. 켜면 코드 쪽 검사만 더한다 — 시대 절 연도 검사
-                      # · 가로지르는 절 잡기 · 겹친 문서는 이름이 나오는 절로 · 빈 절의 지시 나눠 주기.
+                      # · 가로지르는 절 잡기 · 겹친 문서는 이름이 나오는 절로 · 빈 절의 지시 나눠 주기 ·
+                      # 구역을 가진 절 수를 줄이는 재기획은 받지 않기.
                       # 모델이 보는 입력(지시문 · 카드)은 바꾸지 않는다. 바꿔 본 셋(카드 번호 · 지시문 규칙 ·
                       # 재기획에 직전 목차)은 모두 Q5 시대별 목차를 망가뜨리거나 효과가 없어 되돌렸다.
                       # 효과는 plan_check.py 로 켬/끔을 같은 시간대에 번갈아 잰다 — 따로 잰 묶음끼리는 모델
@@ -361,6 +362,11 @@ def plan_problems(toc, fixes, switches):
                         or any("형식 단위" in p for p in problems)) else []
 
 
+def owning_sections(toc, shared=SHARED):
+    """공용 서가가 아닌 문서를 하나라도 맡은 절 수 — 코디네이터가 실제로 구역을 나눈 절."""
+    return sum(any(d not in shared for d in t["담당문서"]) for t in toc)
+
+
 def plan(s):
     sw = s["switches"]
     roster = "\n".join(f"- {k}: {v}" for k, v in ROSTER.items())
@@ -382,8 +388,15 @@ def plan(s):
         costs.append(c2)
         obj2 = jload(raw2, {})
         toc2, fixes2 = validate_plan(obj2, DOCS, ROSTER, CONFIG, sw)
-        if toc2 and len(plan_problems(toc2, fixes2, sw)) < len(problems):
+        # 문제 건수만 보면 '빈 절 하나 있는 시대별 목차'를 '문제 없는 형식 단위 목차'로 바꾼다(ablation-3 Q5 5회차 —
+        # 수상자를 맡은 절이 3개 → 1개, 「시대적 배경」은 공용 문서뿐이라 빈 원고). 두 번째 원고 규칙(keep_new)처럼
+        # 기획보강이 켜졌으면 전용 담당문서를 가진 절 수가 줄어든 재기획은 받지 않는다.
+        before, after = owning_sections(toc), owning_sections(toc2)
+        if toc2 and len(plan_problems(toc2, fixes2, sw)) < len(problems) and (
+                not sw.get("기획보강", True) or after >= before):
             obj, toc, fixes = obj2, toc2, ["(재기획 채택) 첫 목차 문제: " + " / ".join(problems)] + fixes2
+        elif toc2 and after < before and sw.get("기획보강", True):
+            fixes = fixes + [f"(재기획 목차는 전용 담당문서를 가진 절이 {before}개 → {after}개로 줄어 받지 않음 — 첫 목차 유지)"]
         else:
             fixes = fixes + ["(재기획했지만 나아지지 않아 첫 목차 유지)"]
     if not toc:

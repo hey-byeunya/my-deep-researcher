@@ -21,10 +21,12 @@ CHECKS = {
            "시대에 따른 '흐름'을 실제로 보여 주나, 아니면 한 명씩 나열만 하나?",
            "여성 수상자가 아닌 사람·작품이 섞였나? (예: 『설국』은 가와바타 야스나리의 작품)",
            "«근거» 로 댄 문서에 그 문장 내용이 정말 있나? — 의심 가는 문장 하나를 원문과 대조",
-           "머리말·맺음말이 본문에 없는 새 주장을 하나?"],
+           "머리말·맺음말이 본문에 없는 새 주장을 하나?",
+           "시대 절에 그 기간 밖에 상을 받은 수상자가 섞였나? (예: 옐리네크 2004 · 레싱 2007 · 먼로 2013)"],
     "Q8": ["사르트르와 카뮈의 '이어짐'과 '갈라짐'을 둘 다 다뤘나?",
            "대표작(『존재와 무』 『구토』 『이방인』 『페스트』 『시지프 신화』)을 근거로 댔나?",
-           "두 사람을 뒤섞어 쓴 문장이 있나?"],
+           "두 사람을 뒤섞어 쓴 문장이 있나?",
+           "빠진 비교 절(「관계」 등)의 물음이 사람별 절 안에서 다뤄졌나, 아니면 보고서에서 사라졌나?"],
     "Q2": ["선정 주체·기준·절차를 모두 다뤘나?", "한 문서만으로 충분한 질문인데 절을 나눈 것이 도움이 됐나?"],
 }
 WOMEN = ["셀마 라겔뢰프", "그라치아 델레다", "시그리드 운세트", "펄 S. 벅", "가브리엘라 미스트랄", "넬리 작스",
@@ -55,10 +57,13 @@ def render_md(text):
 def who_read(run):
     """절마다 누가 무엇을 읽었는지 (데모와 같은 정보, 짧게)."""
     rows = []
+    orders = {t["절"]: t.get("지시", "") for t in run.get("plan", {}).get("목차", [])}
     for s in run["sections"]:
         docs = s.get("읽은문서", [])
+        order = orders.get(s["절"], "")
         rows.append(f"<li><b>{html.escape(s['절'])}</b> <span class='role'>{html.escape(s.get('역할', ''))}</span>"
-                    f" — {html.escape(', '.join(docs)) or '(없음)'}</li>")
+                    f" — {html.escape(', '.join(docs)) or '(없음)'}"
+                    + (f"<br><span class='role'>지시: {html.escape(order)}</span>" if order else "") + "</li>")
     if run["종류"] == "혼자":
         order = " → ".join(dict.fromkeys(v[1] for v in run["visited"]))
         return f"<p class='meta'>읽은 순서: {html.escape(order)}</p>"
@@ -79,7 +84,8 @@ def column(run, qid):
         extra = f" · 여성 수상자 이름 언급 <b>{len(names)}/{len(WOMEN)}</b>"
     return f"""<section class="col">
   <div class="head"><span class="tag {'team' if run['종류'] == '팀' else 'solo'}">{html.escape(run['설정'])}</span>
-    <span class="nums">근거율 {m['근거율']}% · 읽은문서 {m['읽은문서']} · 편중 {m['인용편중']}% · {m['보고서자수']:,}자{extra}</span></div>
+    <span class="nums">근거율 {m['근거율']}% · 읽은문서 {m['읽은문서']} · 편중 {m['인용편중']}% · {m['보고서자수']:,}자{extra}
+      · 시대불일치 {m.get('시대불일치', 0)}</span></div>
   <details><summary>누가 무엇을 읽었나</summary>{who_read(run)}</details>
   <article>{render_md(run['report'])}</article>
 </section>"""
@@ -126,7 +132,7 @@ footer {{ color:var(--ink-faint); font-size:11.5px; max-width:1400px; margin:0 a
 <div class="checks"><span class='label'>[ 읽으며 볼 것 ]</span> 정답표가 아니라 눈여겨볼 점<ul>{checks}</ul></div>
 <div class="tabs" role="tablist">{tabs}</div></header>
 <main>{pairs}</main>
-<footer>실험 {exp} · 같은 회차의 두 실행을 짝지었다. 혼자 쪽은 그 회차 팀 실행이 실제로 읽은 글자만큼 예산을 받았다.
+<footer>실험 {exp} · 같은 회차의 두 실행을 짝지었다. {note}
 <span class="cite">초록 칩</span> = 근거 문서, <span class="work">《밝은 글씨》</span> = 작품 이름.</footer>
 <script>
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {{
@@ -164,7 +170,9 @@ def main():
     _, question = graph.load_question(args.question)
     checks = "".join(f"<li>{html.escape(c)}</li>" for c in CHECKS.get(args.question, []))
     page = PAGE.format(qid=args.question, left=args.left, right=args.right, question=html.escape(question),
-                       checks=checks, tabs="".join(tabs), pairs="".join(pairs), exp=args.exp)
+                       checks=checks, tabs="".join(tabs), pairs="".join(pairs), exp=args.exp,
+                       note=("혼자 쪽은 그 회차 팀 실행이 실제로 읽은 글자만큼 예산을 받았다." if args.right == "혼자"
+                             else "두 쪽 모두 팀 실행이고 스위치 하나만 다르다 — 같은 회차는 이웃한 시각에 돌았다."))
     out = graph.OUTPUT / "compare" / f"{args.exp}_{args.question}_{args.left}-vs-{args.right}.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")

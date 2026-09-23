@@ -77,5 +77,7 @@ def test_ablation_resumes_and_summarizes(monkeypatch, tmp_path):
     summary = ablation.summarize("t1")
     e = summary["Q5"]["기본"]
     assert e["n"] == 2 and len(e["근거율"]["값"]) == 2 and "표준편차" in e["근거율"]
-    saved = json.loads((tmp_path / "ablation.json").read_text(encoding="utf-8"))
+    saved = json.loads((tmp_path / "t1.json").read_text(encoding="utf-8"))   # 실험마다 제 이름의 요약 파일
     assert saved["실험"] == "t1" and "Q5" in saved["결과"]
+    assert not (tmp_path / "ablation.json").exists()                          # 제출본 요약(ablation-2)은 건드리지 않는다
+    assert ablation.out_path("ablation-2") == ablation.OUT
