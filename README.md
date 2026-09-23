@@ -3,7 +3,7 @@
 한국어 위키백과의 노벨 문학상 수상자 122명 · 대표작 47편 · 공통 문서 7건을 코퍼스로 삼아,
 코디네이터가 목차를 짜 구역을 나누고 서브에이전트들이 동시에 자기 구역만 읽은 뒤 장문 보고서를 쓰는 LangGraph 파이프라인.
 
-> 모두의연구소 「에이전트 팀 꾸리기」 9장 프로젝트. 설계와 실험 결과는 REPORT.md 에 정리한다(마지막 단계에서 작성).
+> 「에이전트 팀 꾸리기」 9장 프로젝트. 설계 · 실험 결과 · 사람의 판단은 [REPORT.md](REPORT.md) 에 정리했다.
 
 ```
 질문 → ① 기획(목차 · 역할 · 담당문서 · 예산) → ② 배치(서브에이전트 동시 파견, 남의 구역 알림)
@@ -27,7 +27,7 @@ app.py               데모 (streamlit) · .streamlit/config.toml 은 화면 테
 compare.py           나란히 읽기 화면 (사람이 판단)
 make_screenshots.py  데모 화면 캡처
 output/              runs.jsonl · ablation.json · ablation-1.json · reports/ · compare/
-docs/                reading-notes.md (사람의 판단과 실패 추적) · CODE_REVIEW_20260923.md · screenshots/
+docs/                reading-notes.md (사람의 판단과 실패 추적) · screenshots/
 tests/               pytest — 가짜 모델(tests/fakes.py)로 네트워크 없이
 ```
 
