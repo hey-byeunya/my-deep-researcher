@@ -31,13 +31,35 @@ def split_refs(inside):
 
 
 # ─── 시대 절 ─────────────────────────────────────────────────────
-_ERA = re.compile(r"(1[89]\d\d|20\d\d)\s*[-–~]\s*(1[89]\d\d|20\d\d)")
+_Y = r"(1[89]\d\d|20\d\d)(년대|년)?"
+_ERA_SPAN = re.compile(_Y + r"(?:\s*[-–~]|[^\d()]{0,12}?부터)\s*" + _Y)   # 1951-2000 · 1909년 라겔뢰프부터 1945년까지
+_ERA_AFTER = re.compile(_Y + r"\s*(?:이후|부터|~\s*$|[-–]\s*$|[-–]\s*현재)")   # 2000년 이후 · 2001~
+_ERA_DECADE = re.compile(r"(1[89]\d0|20\d0)년대")                    # 1980년대
+
+
+def _end(year, unit):
+    """'1970년대까지'는 1979년까지다."""
+    return int(year) + 9 if unit == "년대" else int(year)
 
 
 def era_range(section_title):
-    """절 제목의 기간 — '여성 수상자들의 중기 수상 (1951-2000)' -> (1951, 2000). 없으면 None."""
-    m = _ERA.search(section_title or "")
-    return (int(m[1]), int(m[2])) if m else None
+    """절 제목의 기간 — 없으면 None.
+
+      '중기 수상 (1951-2000)' -> (1951, 2000) · '1909년부터 1970년대까지' -> (1909, 1979)
+      '2000년 이후의 여성 수상자' -> (2000, 9999) · '1980년대 수상자' -> (1980, 1989)
+    처음엔 '1951-2000' 꼴만 읽어서, 모델이 「1945년부터 2000년까지」라고 쓰면 옐리네크(2004)가 그대로 남았다.
+    """
+    title = section_title or ""
+    m = _ERA_SPAN.search(title)
+    if m:
+        return int(m[1]), _end(m[3], m[4])
+    m = _ERA_AFTER.search(title)
+    if m:
+        return int(m[1]), 9999
+    m = _ERA_DECADE.search(title)
+    if m:
+        return int(m[1]), int(m[1]) + 9
+    return None
 
 
 def era_mismatches(toc, years):

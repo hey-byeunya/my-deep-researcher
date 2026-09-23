@@ -3,7 +3,12 @@
 
   python plan_check.py --label 전                 # Q2·Q5·Q8 × 5회, 기획만 (서브에이전트는 돌지 않는다)
   python plan_check.py --label 후 --repeats 5
+  python plan_check.py --label P2 --settings 켬 기획보강끔   # 켬/끔을 같은 시간대에 번갈아 (비교는 이렇게)
   python plan_check.py --summarize-only           # LLM 없이 output/plans.jsonl 에서 표만
+
+비교하려는 설정은 반드시 같은 묶음 안에서 번갈아 돌린다. 모델 입력이 똑같아도 묶음마다 경향이 달랐다
+(P2a 묶음은 Q5 목차 5번이 모두 달랐는데, 2분 뒤 P2 묶음은 5번 모두 같았다). 따로 잰 묶음끼리 비교하면
+코드의 효과와 시간대의 효과가 섞인다.
 
 전 구간 실험(ablation.py)은 한 번에 LLM 을 수십 번 부르지만, 기획은 한두 번이면 된다. 기획을 고칠 때는
 이것으로 먼저 재고, 나아졌을 때만 전 구간 실험으로 넘어간다.
@@ -16,6 +21,7 @@
   베낌               — 카드 줄('제목 ｜ 1993년 수상')을 제목째 베껴 와 코드가 맞춘 건수
   형식의심 절         — 절 제목이 '생애 · 사상 · 시대적 배경 · 주제 변화'처럼 역할/형식 축으로 보이는 절 (사람이 확인할 후보)
   목차 일관성         — 같은 질문 N회의 담당문서 집합(공용 서가 제외)끼리 겹치는 정도(자카드 평균, 0~1)
+  다른 목차           — N회 중 서로 다른 목차(절 제목 · 담당문서)가 몇 개였나. 1 이면 N번이 사실상 표본 하나다
   코디 글자           — 코디네이터가 기획에 본 글자 (격리 비용 — 기획을 고쳐도 늘면 안 된다)
 """
 import argparse
@@ -33,6 +39,7 @@ from titles import era_mismatches, era_range
 OUT = graph.OUTPUT / "plans.jsonl"
 SUMMARY = graph.OUTPUT / "plans.json"
 QUESTIONS = ["Q2", "Q5", "Q8"]
+SETTINGS = {"켬": {}, "기획보강끔": {"기획보강": False}}   # 이름: 바꾸는 스위치
 
 _FORMATISH = re.compile(r"(생애|사상|시대적 배경|사회적 맥락|역사적 배경|주제 변화|주제와|문학적 흐름|문학적 기여|작품과 주제|영향과 의의)")
 
@@ -71,6 +78,17 @@ def consistency(recs):
     return round(statistics.mean(pairs), 2) if pairs else None
 
 
+def distinct(recs):
+    """서로 다른 목차 수 — 절 제목과 담당문서가 모두 같으면 같은 목차로 본다."""
+    return len({json.dumps([(t["절"], t["담당문서"]) for t in r["plan"].get("목차", [])], ensure_ascii=False)
+                for r in recs})
+
+
+def group_name(rec):
+    """요약표의 묶음 이름 — 라벨, 설정을 번갈아 잰 묶음이면 '라벨/설정'."""
+    return f"{rec['라벨']}/{rec['설정']}" if rec.get("설정") else rec["라벨"]
+
+
 def load(label=None):
     if not OUT.exists():
         return []
@@ -78,17 +96,18 @@ def load(label=None):
     return [r for r in recs if label is None or r["라벨"] == label]
 
 
-def run_one(label, qid, rep):
+def run_one(label, qid, rep, setting=None):
     _, question = graph.load_question(qid)
-    out = graph.run(question, plan_only=True)
-    rec = {"라벨": label, "질문id": qid, "반복": rep, "시각": time.strftime("%Y-%m-%d %H:%M:%S"),
+    out = graph.run(question, plan_only=True, **(SETTINGS[setting] if setting else {}))
+    rec = {"라벨": label, **({"설정": setting} if setting else {}), "질문id": qid, "반복": rep,
+           "시각": time.strftime("%Y-%m-%d %H:%M:%S"),
            "코퍼스": graph.corpus_version(), "question": question,
            "plan": out["plan"], "cost": out["cost"], "log": out["log"]}
     with graph._save_lock:
         with OUT.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     s = stats(rec)
-    print(f"  [{label}] {qid} r{rep} · 절 {s['절수']} · 재기획 {'채택' if s['재기획채택'] else ('무효' if s['재기획발동'] else '-')}"
+    print(f"  [{label}{'/' + setting if setting else ''}] {qid} r{rep} · 절 {s['절수']} · 재기획 {'채택' if s['재기획채택'] else ('무효' if s['재기획발동'] else '-')}"
           f" · 빈절 {s['빈절제외']} · 시대불일치 {s['시대불일치']}/{s['시대절담당']} · 겹침 {s['구역겹침']}", flush=True)
     return rec
 
@@ -96,10 +115,10 @@ def run_one(label, qid, rep):
 def summarize():
     recs = load()
     summary = {}
-    for label in dict.fromkeys(r["라벨"] for r in recs):
+    for label in dict.fromkeys(group_name(r) for r in recs):
         summary[label] = {}
-        for qid in dict.fromkeys(r["질문id"] for r in recs if r["라벨"] == label):
-            group = [r for r in recs if r["라벨"] == label and r["질문id"] == qid]
+        for qid in dict.fromkeys(r["질문id"] for r in recs if group_name(r) == label):
+            group = [r for r in recs if group_name(r) == label and r["질문id"] == qid]
             ss = [stats(r) for r in group]
             tot = lambda k: sum(s[k] for s in ss)
             summary[label][qid] = {
@@ -111,6 +130,7 @@ def summarize():
                 "구역겹침": tot("구역겹침"), "배정실패": tot("배정실패"), "베낌": tot("베낌"),
                 "형식의심절": tot("형식의심절"),
                 "일관성": consistency(group),
+                "다른목차": distinct(group),
                 "코디글자": round(statistics.mean(s["코디글자"] for s in ss)),
                 "목차": [" / ".join(t["절"] for t in r["plan"]["목차"]) for r in group],
             }
@@ -119,7 +139,7 @@ def summarize():
 
 
 def print_table(summary):
-    cols = ["n", "재기획", "빈절제외", "절수", "시대불일치", "구역겹침", "배정실패", "베낌", "형식의심절",
+    cols = ["n", "다른목차", "재기획", "빈절제외", "절수", "시대불일치", "구역겹침", "배정실패", "베낌", "형식의심절",
             "일관성", "코디글자"]
     for label, qs in summary.items():
         print(f"\n── {label}")
@@ -132,11 +152,15 @@ def main():
     ap.add_argument("--label", default="기본", help="이번 측정의 이름 (예: 전 / 후)")
     ap.add_argument("--questions", nargs="+", default=QUESTIONS)
     ap.add_argument("--repeats", type=int, default=5)
+    ap.add_argument("--settings", nargs="+", choices=list(SETTINGS), help="번갈아 잴 설정 (주지 않으면 기본 스위치 하나)")
     ap.add_argument("--summarize-only", action="store_true")
     args = ap.parse_args()
     if not args.summarize_only:
-        done = {(r["질문id"], r["반복"]) for r in load(args.label)}
-        jobs = [(q, rep) for q in args.questions for rep in range(1, args.repeats + 1) if (q, rep) not in done]
+        done = {(r["질문id"], r["반복"], r.get("설정")) for r in load(args.label)}
+        settings = args.settings or [None]
+        # 회차 → 질문 → 설정 순으로 늘어놓아, 같은 질문의 켬/끔이 바로 이웃해서 돈다
+        jobs = [(q, rep, st) for rep in range(1, args.repeats + 1) for q in args.questions for st in settings
+                if (q, rep, st) not in done]
         print(f"기획만 {len(jobs)}번 — 라벨 '{args.label}'")
         with ThreadPoolExecutor(max_workers=5) as pool:
             list(pool.map(lambda j: run_one(args.label, *j), jobs))

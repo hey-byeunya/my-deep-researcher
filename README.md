@@ -38,7 +38,7 @@ tests/               pytest — 가짜 모델(tests/fakes.py)로 네트워크 �
 python3.14 -m venv .venv
 .venv/bin/pip install -r requirements.txt   # 설치된 정확한 버전은 requirements-lock.txt
 cp .env.example .env                        # OPENAI_API_KEY 채우기 (.env 는 저장소에 올라가지 않는다)
-.venv/bin/pytest -q                         # 91개 — LLM · 네트워크 없이 돈다
+.venv/bin/pytest -q                         # 95개 — LLM · 네트워크 없이 돈다
 ```
 
 ## 실행
@@ -60,7 +60,7 @@ cp .env.example .env                        # OPENAI_API_KEY 채우기 (.env 는
 .venv/bin/python graph.py --question Q5                # 전 구간 → output/reports/*.md · output/runs.jsonl
 .venv/bin/python graph.py --question "직접 쓴 질문"      # 질문 세트 밖의 질문
 .venv/bin/python graph.py --question Q5 --print-report # 보고서 본문까지 출력
-.venv/bin/python graph.py --question Q5 --no-배정       # 켜진 스위치 끄기 (--no-역할 · --no-배정 · --no-구역 · --no-재위임)
+.venv/bin/python graph.py --question Q5 --no-배정       # 켜진 스위치 끄기 (--no-역할 · --no-배정 · --no-구역 · --no-재위임 · --no-기획보강)
 .venv/bin/python graph.py --question Q5 --재촉          # 꺼진 스위치 켜기 (--담당구역 · --재촉)
 ```
 
@@ -87,11 +87,14 @@ cp .env.example .env                        # OPENAI_API_KEY 채우기 (.env 는
 기획만 따로 잴 때(전 구간보다 훨씬 싸다 — 한 번에 LLM 1~2회):
 
 ```bash
-.venv/bin/python plan_check.py --label 전        # Q2·Q5·Q8 × 5회 → output/plans.jsonl · plans.json
-.venv/bin/python plan_check.py --summarize-only  # LLM 없이 표만
+.venv/bin/python plan_check.py --label 확인 --settings 켬 기획보강끔   # 켬/끔을 번갈아 Q2·Q5·Q8 × 5회
+.venv/bin/python plan_check.py --summarize-only                         # LLM 없이 표만
 ```
 
-재기획 · 빈 절 제외 · 시대불일치 · 구역겹침 · 배정실패 · 목차 일관성(같은 질문 5회의 담당문서 겹침) · 코디 글자를 센다.
+재기획 · 빈 절 제외 · 시대불일치 · 구역겹침 · 배정실패 · 목차 일관성(같은 질문 5회의 담당문서 겹침) ·
+서로 다른 목차 수 · 코디 글자를 센다. **비교할 설정은 반드시 같은 묶음 안에서 번갈아 돌린다** — 모델 입력이
+같아도 묶음마다 경향이 달라(5번 모두 같은 목차가 나오기도 했다) 따로 잰 묶음끼리는 비교가 안 된다.
+`기획보강`(기본 켬)은 코드 쪽 검사만 더한다 — 시대 절 연도 검사 · 가로지르는 절 잡기 · 빈 절의 지시 나눠 주기.
 
 지표는 [metrics.py](metrics.py) 의 `METRICS` 표에 이름 · 종류(신호/경보) · 보는 장치 · 한 줄 설명이 있다.
 저장된 실행 기록만으로 다시 계산되므로 LLM 없이 비교할 수 있다.

@@ -208,3 +208,56 @@ def test_clean_plan_is_not_replanned(monkeypatch):
     monkeypatch.setattr(graph, "_invoke", fake_llm(good))
     out = graph.run("여성 수상자", plan_only=True)
     assert [c["단계"] for c in out["cost"]] == ["기획"]
+
+
+# ─── 기획 강화 P2 — 가로지르는 절 · 빈 절의 지시 · 기간 표기 · 스위치 ─────────
+
+def test_cross_cutting_sections_are_flagged_as_format():
+    """「사르트르와 카뮈의 비교」처럼 여러 절을 가로지르는 절은 형식 단위로 잡아 재기획하게 한다."""
+    obj = {"목차": [{"절": "사르트르의 실존주의", "역할": "사상 담당", "담당문서": ["장폴 사르트르"]},
+                    {"절": "사르트르와 카뮈의 비교", "역할": "비교 담당", "담당문서": ["알베르 카뮈"]}]}
+    toc, fixes = graph.validate_plan(obj, graph.DOCS, graph.ROSTER, graph.CONFIG, SW)
+    assert [f for f in fixes if "형식 단위" in f] == [
+        "형식 단위 절 제목: «사르트르와 카뮈의 비교» (여러 절을 가로지르는 절 — 비교는 대상별 절의 지시에 넣는다)"]
+    assert graph.plan_problems(toc, fixes, SW)                      # 재기획 사유가 된다
+
+
+def test_empty_section_hands_its_question_to_the_rest(monkeypatch):
+    """구역이 빈 절(「관계」)은 빠지지만, 그 절의 물음은 남은 절의 지시에 덧붙어 보고서에서 사라지지 않는다."""
+    obj = {"목차": [{"절": "사르트르", "지시": "사르트르의 실존주의.", "역할": "사상 담당", "담당문서": ["장폴 사르트르"]},
+                    {"절": "카뮈", "지시": "카뮈의 부조리.", "역할": "사상 담당", "담당문서": ["알베르 카뮈"]},
+                    {"절": "두 사람의 관계", "지시": "둘이 어떻게 이어지고 갈라졌나.", "역할": "생애 담당",
+                     "담당문서": ["장폴 사르트르", "알베르 카뮈"]}]}
+    monkeypatch.setattr(graph, "_invoke", fake_llm(obj))
+    toc = graph.run("사르트르와 카뮈", plan_only=True)["plan"]["목차"]
+    assert [t["절"] for t in toc] == ["사르트르", "카뮈"]
+    assert all("«두 사람의 관계»의 몫" in t["지시"] and "갈라졌나" in t["지시"] for t in toc)
+    assert sum(t["예산"] for t in toc) >= graph.CONFIG["절수"] * graph.CONFIG["절예산_글자"] - len(toc)
+
+
+def test_era_titles_in_words_are_read():
+    """「1945년부터 2000년까지」「2000년 이후」처럼 써도 기간으로 읽는다 (처음엔 1951-2000 꼴만 읽었다)."""
+    assert titles.era_range("1909년 라겔뢰프부터 1945년까지의 여성 수상자") == (1909, 1945)
+    assert titles.era_range("1909년부터 1970년대까지") == (1909, 1979)
+    assert titles.era_range("2000년 이후의 여성 수상자") == (2000, 9999)
+    assert titles.era_range("사르트르의 실존주의") is None
+    toc = [{"절": "1945년부터 2000년까지의 여성 수상자", "담당문서": ["토니 모리슨", "엘프리데 옐리네크"]}]
+    assert titles.era_mismatches(toc, graph.AWARD_YEARS) == [(toc[0]["절"], "엘프리데 옐리네크", 2004)]
+
+
+def test_planning_boost_switch_restores_submitted_rules(monkeypatch):
+    """기획보강을 끄면 제출본 규칙 — 시대 검사 · 가로지르는 절 잡기 · 지시 나눠 주기가 빠진다.
+    켜든 끄든 모델이 받는 입력(지시문 · 카드)은 같다 — 보강은 모두 코드 쪽이다(입력을 바꾼 시도는 되돌렸다)."""
+    off = {**SW, "기획보강": False}
+    obj = {"목차": [{"절": "중기 (1951-2000)", "지시": "중기.", "역할": "수상 담당", "담당문서": ["엘프리데 옐리네크"]},
+                    {"절": "두 사람 비교", "지시": "비교한다.", "역할": "비교 담당", "담당문서": ["엘프리데 옐리네크"]}]}
+    toc, fixes = graph.validate_plan(obj, graph.DOCS, graph.ROSTER, graph.CONFIG, off)
+    assert toc[0]["담당문서"] == ["엘프리데 옐리네크"]                    # 기간 밖이어도 그대로
+    assert not any("시대 불일치" in f or "형식 단위" in f for f in fixes)
+    seen = []
+    monkeypatch.setattr(graph, "_invoke", lambda m: seen.append(m) or json.dumps(obj, ensure_ascii=False))
+    out = graph.run("질문", plan_only=True, 기획보강=False)
+    assert "빠진 절" not in out["plan"]["목차"][0]["지시"]
+    n_off = len(seen)
+    graph.run("질문", plan_only=True)
+    assert seen[0] == seen[n_off]                                        # 첫 기획 호출의 입력이 글자까지 같다

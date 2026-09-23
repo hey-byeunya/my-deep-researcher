@@ -5,7 +5,7 @@
   python graph.py --question "자유 질문"      # 직접 쓴 질문으로
   python graph.py --question Q5 --plan-only  # 기획까지만 (목차·배정 확인용)
 
-도메인 값은 config.json 에, 실험 스위치(역할 · 배정 · 구역 · 담당구역 · 재위임 · 재촉)는 SWITCHES 에 둔다.
+도메인 값은 config.json 에, 실험 스위치(역할 · 배정 · 구역 · 담당구역 · 재위임 · 재촉 · 기획보강)는 SWITCHES 에 둔다.
 수업 코드(agent-team-agt1/deep_research_team.py)에서 바꾼 것:
   · 예산 단위를 '문서 건수'에서 '읽은 글자 수'로 — 이 코퍼스는 문서 길이가 379자~5만 자로 극단적이라,
     건수 예산이면 처칠 한 건과 싱어 한 건이 같은 값이 된다. 긴 문서는 한 번에 2,500자씩 이어 읽는다.
@@ -54,10 +54,19 @@ SWITCHES = {
     "재위임": True,   # 끄면 1바퀴로 끝낸다
     "재촉": False,    # 켜면 서브에이전트가 그만 읽겠다고 할 때 남은 예산을 알리고 한 번 더 묻고, 그래도 못 고르면
                       # 지시문 단어와 가장 많이 겹치는 후보를 읽힌다(대조군과 같은 규칙). 배정끔 해석 보강용.
+    "기획보강": True, # 끄면 제출본(ablation-2)의 기획으로 돌아간다. 켜면 코드 쪽 검사만 더한다 — 시대 절 연도 검사
+                      # · 가로지르는 절 잡기 · 겹친 문서는 이름이 나오는 절로 · 빈 절의 지시 나눠 주기.
+                      # 모델이 보는 입력(지시문 · 카드)은 바꾸지 않는다. 바꿔 본 셋(카드 번호 · 지시문 규칙 ·
+                      # 재기획에 직전 목차)은 모두 Q5 시대별 목차를 망가뜨리거나 효과가 없어 되돌렸다.
+                      # 효과는 plan_check.py 로 켬/끔을 같은 시간대에 번갈아 잰다 — 따로 잰 묶음끼리는 모델
+                      # 경향이 묶음마다 달라(같은 입력에 5번 모두 같은 목차가 나오기도 했다) 비교가 안 된다.
 }
 
 # 목차가 형식 단위로 나뉘었는지 알아보는 표지 — 이런 절은 전원이 같은 자료를 읽게 만든다
 FORMAT_WORDS = re.compile(r"^(개요|서론|배경|연표|요약|결론|맺음말|분석|평가|종합|의의|한계)$")
+# 여러 절을 가로지르는 절 — 「사르트르와 카뮈의 비교」「주제의 공통점」. 담당문서가 다른 절과 겹칠 수밖에 없어
+# 재기획 뒤에도 비어 빠지곤 했다(Q8 은 기준선 5번 모두). 비교는 대상별 절의 지시에 넣게 한다.
+CROSS_WORDS = re.compile(r"(비교|종합|공통점|차이점)")
 
 
 # ─── 코퍼스 ──────────────────────────────────────────────────────
@@ -231,6 +240,7 @@ def validate_plan(obj, docs, roster, cfg, switches, shared=SHARED, years=None):
          옮기고 맞는 절이 없으면 뺀다. 코디네이터는 옐리네크(2004)를 「1951-2000」에 넣는 일을 되풀이했다.
     """
     years = AWARD_YEARS if years is None else years
+    more = switches.get("기획보강", True)          # 끄면 제출본 규칙: 먼저 적은 절이 갖고, 시대 · 가로지름 검사 없음
     cap = cfg.get("담당문서_상한", 6)
     fixes, rows = [], []
     items = [i for i in obj.get("목차", []) if isinstance(i, dict)][:cfg["절수"]]
@@ -240,6 +250,8 @@ def validate_plan(obj, docs, roster, cfg, switches, shared=SHARED, years=None):
         title = str(item.get("절") or f"절 {idx + 1}").strip()
         if FORMAT_WORDS.match(title):
             fixes.append(f"형식 단위 절 제목: «{title}»")
+        elif more and CROSS_WORDS.search(title):
+            fixes.append(f"형식 단위 절 제목: «{title}» (여러 절을 가로지르는 절 — 비교는 대상별 절의 지시에 넣는다)")
         role = item.get("역할", "")
         if not switches["역할"]:
             role = cfg["기본역할"]
@@ -274,7 +286,7 @@ def validate_plan(obj, docs, roster, cfg, switches, shared=SHARED, years=None):
         for d, _ in row["원함"]:
             if d not in shared:
                 claims.setdefault(d, []).append(k)
-    owner = {d: max(ks, key=lambda k: (fit(rows[k]["절"] + " " + rows[k]["지시"], d), -k))
+    owner = {d: max(ks, key=lambda k: (fit(rows[k]["절"] + " " + rows[k]["지시"], d) if more else 0, -k))
              for d, ks in claims.items()}
     for k, row in enumerate(rows):
         row["구역"] = []
@@ -285,7 +297,7 @@ def validate_plan(obj, docs, roster, cfg, switches, shared=SHARED, years=None):
                 fixes.append(f"«{row['절']}» {kind}문서 '{d}' 가 «{rows[owner[d]]['절']}» 와 겹쳐 그쪽에 둠 (구역 겹침)")
 
     # ③ 시대 — 기간 밖 수상자는 맞는 시대 절로
-    spans = [era_range(r["절"]) for r in rows]
+    spans = [era_range(r["절"]) if more else None for r in rows]
     for k, row in enumerate(rows):
         if not spans[k]:
             continue
@@ -362,6 +374,8 @@ def plan(s):
     if problems:
         # 한 번만 다시 짜게 한다. 코디네이터는 문서 카드를 다시 받으므로 그 글자도 코디 비용에 든다.
         log.append(f"① 기획   목차를 다시 짜게 함 — 문제 {len(problems)}건: " + " / ".join(problems[:3]))
+        # 직전 목차를 함께 돌려주는 방식도 시험했다(plan_check 'P2-번갈아'). 재기획이 나아진 횟수는 늘지 않았고,
+        # 모델이 돌려받은 절 제목을 문서처럼 담당문서에 적었다(Q8 배정실패 12건). 그래서 문제 목록만 준다.
         feedback = ("[직전 목차의 문제 — 코드가 검사했다]\n" + "\n".join(f"- {p}" for p in problems) +
                     "\n절끼리 담당문서가 겹치지 않도록 내용 단위(사람·나라·시대·사례·작품)로 다시 나눠라.")
         raw2, c2 = ask(system, user + "\n\n" + feedback, "코디", stage="기획(재)")
@@ -379,13 +393,20 @@ def plan(s):
     if sw["배정"] and any(not t["담당문서"] for t in toc) and any(t["담당문서"] for t in toc):
         # 재기획 뒤에도 구역이 빈 절(대개 '비교·종합' 같은 형식 절)은 파견하지 않는다. 격리된 서브에이전트는
         # 남의 절 자료를 볼 수 없어서 그런 절은 쓸 재료가 없다. 그 예산은 남은 절에 비율대로 나눠 준다.
-        empty = [t["절"] for t in toc if not t["담당문서"]]
+        # 지시도 나눠 준다 — 「사르트르와 카뮈의 관계」가 빠지면 '두 사람이 어떻게 갈라졌나'가 보고서에서
+        # 통째로 사라졌다(Q8 맺음말이 뭉툭했던 까닭). 남은 절이 자기 자료로 답할 수 있는 만큼 맡는다.
+        empty = [t for t in toc if not t["담당문서"]]
         total = sum(t["예산"] for t in toc)
         toc = [t for t in toc if t["담당문서"]]
         kept = sum(t["예산"] for t in toc)
         for t in toc:
             t["예산"] = int(t["예산"] * total / kept)
-        fixes.append(f"구역이 빈 절 {len(empty)}개는 파견하지 않고 예산을 나눔: «{'», «'.join(empty)}»")
+            for e in (empty if sw.get("기획보강", True) else []):
+                if e["지시"]:
+                    t["지시"] = (f"{t['지시']} 빠진 절 «{e['절']}»의 몫도 이 절의 자료로 답할 수 있는 만큼 맡는다: "
+                                 f"{e['지시']}").strip()
+        fixes.append(f"구역이 빈 절 {len(empty)}개는 파견하지 않고 예산을 나눔: «{'», «'.join(e['절'] for e in empty)}»"
+                     + (" · 지시는 남은 절에 덧붙임" if sw.get("기획보강", True) and any(e["지시"] for e in empty) else ""))
     p = {"제목": obj.get("제목") or s["question"], "목차": toc, "교정": fixes,
          "배치": list(range(len(toc))), "바퀴": 1}
     seeds = " · ".join(f"{t['역할']}→«{t['시작문서'] or '자율'}»+{max(len(t.get('담당문서', [])) - 1, 0)}건"
