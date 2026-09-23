@@ -1,0 +1,19 @@
+# 터미널 콘솔 디자인 시스템(범용판)의 토큰을 Streamlit 테마로 옮긴 것 — my-graph-agent 와 같은 값.
+# 테마로 못 옮기는 것(섹션 라벨 · 배지 · 액자 · 칩 등)은 app.py 의 CSS 가 맡는다.
+[theme]
+base = "dark"
+primaryColor = "#4ee08a"            # accent — 강조는 이 색 하나만
+backgroundColor = "#050706"         # surface-0
+secondaryBackgroundColor = "#0a0d0c" # surface-1 (패널·사이드바)
+textColor = "#cfd8d3"               # ink
+borderColor = "#1d2723"             # line
+linkColor = "#4ee08a"
+baseRadius = "none"                 # 모든 모서리는 사각
+showWidgetBorder = true
+font = "'JetBrains Mono', 'Pretendard', monospace"
+codeFont = "'JetBrains Mono', 'Pretendard', monospace"
+baseFontSize = 13
+
+[theme.sidebar]
+backgroundColor = "#0a0d0c"
+secondaryBackgroundColor = "#0e1412"

@@ -11,6 +11,8 @@ measure(run, corpus) 는 저장된 실행 기록 하나만 있으면 계산된�
 import re
 from collections import Counter
 
+from titles import resolve_title, split_refs
+
 # 이름: (종류, 보는 장치, 한 줄 설명)
 METRICS = {
     # ── 신호 ──
@@ -53,14 +55,6 @@ def citations(text):
     return re.findall(r"«([^»]+)»", text)
 
 
-def _resolve(name, docs):
-    name = name.strip()
-    if name in docs:
-        return name
-    base = {re.sub(r"\s*\([^)]*\)$", "", t): t for t in docs}
-    return base.get(name)
-
-
 def measure(run, corpus):
     """run: {"report", "sections"(채택 원고만), "visited", "cost", "plan"}. corpus: {"docs", "_종류"}."""
     docs = corpus["docs"]
@@ -75,8 +69,11 @@ def measure(run, corpus):
     # ── 근거율: 문장마다 «» 인용이 있고 그 문서가 코퍼스에 있으며 누군가 읽었는가
     read_any = {v[1] for v in visited}
     sents = sentences(report)
-    grounded = [s for s in sents if any((_resolve(c, docs) or "") in read_any for c in citations(s))]
-    cited_all = [r for r in (_resolve(c, docs) for c in citations(report)) if r]
+    def refs(text):   # «A, B» 는 A 와 B 두 건 — graph.check_citations 와 같은 규칙(titles.py)
+        return [t for c in citations(text) for t in (resolve_title(p, docs) for p in split_refs(c)) if t]
+
+    grounded = [s for s in sents if any(t in read_any for t in refs(s))]
+    cited_all = refs(report)
     use = Counter(cited_all)
 
     # ── 절 단위: 채택 원고의 절이 읽은 문서로만 인용했는가
@@ -97,7 +94,7 @@ def measure(run, corpus):
 
     coord = sum(c["글자"] for c in cost if c["누가"] == "코디")
     sub = sum(c["글자"] for c in cost if c["누가"] == "서브")
-    plan_calls = [c["글자"] for c in cost if c["누가"] == "코디" and c["단계"].startswith("기획")]
+    plan_calls = [c["글자"] for c in cost if c["누가"] == "코디" and c.get("단계", "").startswith("기획")]
     fixes = plan.get("교정", [])
 
     m = {
@@ -119,7 +116,7 @@ def measure(run, corpus):
         "절간중복문서": len(overlap_docs),
         "구역겹침": sum("구역 겹침" in f for f in fixes),
         "배정실패": sum("코퍼스에 없어" in f for f in fixes),
-        "재기획": sum(c["단계"] == "기획(재)" for c in cost),
+        "재기획": sum(c.get("단계") == "기획(재)" for c in cost),
     }
     detail = {"문장수": len(sents), "근거붙은문장": len(grounded), "인용수": len(cited_all),
               "절간중복문서": overlap_docs, "읽고안쓴": sorted(read_any - set(use)),

@@ -11,7 +11,7 @@ import argparse
 import html
 import json
 import re
-from pathlib import Path
+import sys
 
 import graph
 
@@ -76,7 +76,7 @@ def column(run, qid):
     extra = ""
     if qid == "Q5":
         names = women_covered(run)
-        extra = f" · 여성 수상자 이름 언급 <b>{len(names)}/18</b>"
+        extra = f" · 여성 수상자 이름 언급 <b>{len(names)}/{len(WOMEN)}</b>"
     return f"""<section class="col">
   <div class="head"><span class="tag {'team' if run['종류'] == '팀' else 'solo'}">{html.escape(run['설정'])}</span>
     <span class="nums">근거율 {m['근거율']}% · 읽은문서 {m['읽은문서']} · 편중 {m['인용편중']}% · {m['보고서자수']:,}자{extra}</span></div>
@@ -89,38 +89,45 @@ PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>나란히 읽기 {qid}</title>
 <style>
-:root {{ --bg:#fbfaf7; --fg:#1d1d1f; --muted:#6b6b70; --line:#e4e1da; --cite:#e8f0ff; --cite-fg:#1f4fb3;
-        --work:#7a4b00; --team:#0f7b5f; --solo:#8a3ffc; --card:#ffffff; }}
-@media (prefers-color-scheme: dark) {{ :root {{ --bg:#141416; --fg:#ececef; --muted:#9a9aa2; --line:#2c2c31;
-        --cite:#1d2b4a; --cite-fg:#9dbbff; --work:#f0c27a; --team:#4fd1a8; --solo:#b98cff; --card:#1c1c20; }} }}
-body {{ margin:0; background:var(--bg); color:var(--fg); font:16px/1.75 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }}
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://cdn.jsdelivr.net/npm/pretendard@1.3.9/dist/web/static/pretendard.min.css');
+/* 터미널 콘솔 디자인 시스템(범용판) — app.py · my-graph-agent 와 같은 토큰 */
+:root {{ --surface-0:#050706; --surface-1:#0a0d0c; --surface-2:#0e1412; --surface-sel:#1a2621;
+        --line:#1d2723; --line-soft:#141c19; --line-control:#2c3a35;
+        --ink-hi:#e8efeb; --ink:#cfd8d3; --ink-dim:#8b9a93; --ink-faint:#3c4a44;
+        --accent:#4ee08a; --warn:#e8c04e; --on-accent:#05100a;
+        --mono:'JetBrains Mono','Pretendard',monospace; }}
+body {{ margin:0; background:var(--surface-0); color:var(--ink); font:13px/1.9 var(--mono); }}
 header {{ padding:20px 16px 8px; max-width:1400px; margin:0 auto; }}
-h1 {{ font-size:20px; margin:0 0 4px; }} .q {{ color:var(--muted); margin:0 0 12px; }}
-.checks {{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:10px 16px; margin:0 0 12px; }}
-.checks li {{ margin:2px 0; }}
-.tabs {{ display:flex; gap:6px; flex-wrap:wrap; }}
-.tabs button {{ border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:999px; padding:4px 14px; cursor:pointer; font:inherit; }}
-.tabs button[aria-selected="true"] {{ background:var(--fg); color:var(--bg); }}
-main {{ max-width:1400px; margin:0 auto; padding:8px 16px 40px; }}
+h1 {{ font-size:20px; margin:0 0 4px; color:var(--ink-hi); }} .q {{ color:var(--ink-dim); margin:0 0 12px; }}
+.label {{ font-size:11px; letter-spacing:.14em; color:var(--accent); text-transform:uppercase; }}
+.checks {{ background:var(--surface-1); border:1px solid var(--line); padding:10px 16px; margin:0 0 12px; }}
+.checks li {{ margin:2px 0; color:var(--ink-dim); }}
+.tabs {{ display:flex; gap:0; flex-wrap:wrap; border-bottom:1px solid var(--line); }}
+.tabs button {{ border:none; background:transparent; color:var(--ink-dim); padding:6px 14px; cursor:pointer; font:inherit; font-size:12px; }}
+.tabs button[aria-selected="true"] {{ background:var(--surface-sel); color:var(--ink-hi); box-shadow:inset 0 -2px 0 var(--accent); }}
+main {{ max-width:1400px; margin:0 auto; padding:12px 16px 40px; }}
 .pair {{ display:none; grid-template-columns:1fr 1fr; gap:16px; }} .pair.on {{ display:grid; }}
 @media (max-width: 860px) {{ .pair.on {{ grid-template-columns:1fr; }} }}
-.col {{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 18px; min-width:0; }}
+.col {{ background:var(--surface-1); border:1px solid var(--line); padding:14px 18px; min-width:0; }}
 .head {{ display:flex; flex-wrap:wrap; gap:8px; align-items:baseline; border-bottom:1px solid var(--line); padding-bottom:8px; }}
-.tag {{ font-weight:700; padding:1px 10px; border-radius:6px; color:#fff; }} .tag.team {{ background:var(--team); }} .tag.solo {{ background:var(--solo); }}
-.nums {{ color:var(--muted); font-size:14px; }}
-details {{ margin:8px 0; font-size:14px; }} summary {{ cursor:pointer; color:var(--muted); }}
-.meta {{ color:var(--muted); font-size:14px; }}
-h2 {{ font-size:19px; margin:14px 0 6px; }} h3 {{ font-size:17px; margin:18px 0 4px; }}
-.cite {{ background:var(--cite); color:var(--cite-fg); border-radius:4px; padding:0 4px; font-size:13px; white-space:nowrap; }}
-.work {{ color:var(--work); }} .role {{ color:var(--muted); font-size:13px; font-style:normal; }}
-footer {{ color:var(--muted); font-size:13px; max-width:1400px; margin:0 auto; padding:0 16px 24px; }}
+.tag {{ display:inline-flex; align-items:center; gap:7px; padding:2px 9px; font-size:11.5px; letter-spacing:.04em; border:1px solid; }}
+.tag::before {{ content:""; width:6px; height:6px; background:currentColor; }}
+.tag.team {{ color:var(--accent); }} .tag.solo {{ color:var(--warn); }}
+.nums {{ color:var(--ink-dim); font-size:11.5px; }}
+details {{ margin:8px 0; font-size:12px; }} summary {{ cursor:pointer; color:var(--ink-dim); }}
+.meta {{ color:var(--ink-dim); font-size:12px; }}
+h2 {{ font-size:17px; margin:14px 0 6px; color:var(--ink-hi); }} h3 {{ font-size:14px; margin:18px 0 4px; color:var(--ink-hi); }}
+.cite {{ border:1px solid var(--accent); color:var(--accent); background:rgba(78,224,138,.06); padding:0 5px; font-size:11px; white-space:nowrap; }}
+.work {{ color:var(--ink-hi); }} .role {{ color:var(--ink-faint); font-size:11.5px; font-style:normal; }}
+footer {{ color:var(--ink-faint); font-size:11.5px; max-width:1400px; margin:0 auto; padding:0 16px 24px; }}
 </style></head><body>
-<header><h1>나란히 읽기 — {qid} · {left} 대 {right}</h1><p class="q">{question}</p>
-<div class="checks"><b>읽으며 볼 것</b> (정답표가 아니라 눈여겨볼 점)<ul>{checks}</ul></div>
+<header><div class="label">[ SIDE BY SIDE ]</div><h1>나란히 읽기 — {qid} · {left} 대 {right}</h1><p class="q">{question}</p>
+<div class="checks"><span class='label'>[ 읽으며 볼 것 ]</span> 정답표가 아니라 눈여겨볼 점<ul>{checks}</ul></div>
 <div class="tabs" role="tablist">{tabs}</div></header>
 <main>{pairs}</main>
 <footer>실험 {exp} · 같은 회차의 두 실행을 짝지었다. 혼자 쪽은 그 회차 팀 실행이 실제로 읽은 글자만큼 예산을 받았다.
-<span class="cite">파란 칩</span> = 근거 문서, <span class="work">《갈색》</span> = 작품 이름.</footer>
+<span class="cite">초록 칩</span> = 근거 문서, <span class="work">《밝은 글씨》</span> = 작품 이름.</footer>
 <script>
 document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {{
   document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-selected', x === b));
@@ -136,7 +143,10 @@ def main():
     ap.add_argument("--left", default="기본")
     ap.add_argument("--right", default="혼자")
     args = ap.parse_args()
-    rows = [json.loads(l) for l in (graph.OUTPUT / "runs.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    path = graph.OUTPUT / "runs.jsonl"
+    if not path.exists():
+        sys.exit("output/runs.jsonl 이 없다 — 먼저 python ablation.py 로 실험을 돌린다")
+    rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
     rows = [r for r in rows if r.get("실험") == args.exp and r["질문id"] == args.question]
     reps = sorted({r["반복"] for r in rows})
     tabs, pairs = [], []
@@ -149,6 +159,8 @@ def main():
         tabs.append(f'<button role="tab" data-for="{pid}" aria-selected="{str(i == 0).lower()}">{rep}회차</button>')
         pairs.append(f'<div class="pair{" on" if i == 0 else ""}" id="{pid}">'
                      f'{column(left, args.question)}{column(right, args.question)}</div>')
+    if not pairs:
+        sys.exit(f"짝지을 실행이 없다 — 실험 {args.exp} · {args.question} · {args.left} 대 {args.right}")
     _, question = graph.load_question(args.question)
     checks = "".join(f"<li>{html.escape(c)}</li>" for c in CHECKS.get(args.question, []))
     page = PAGE.format(qid=args.question, left=args.left, right=args.right, question=html.escape(question),

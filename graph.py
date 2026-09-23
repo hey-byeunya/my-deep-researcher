@@ -5,12 +5,17 @@
   python graph.py --question "자유 질문"      # 직접 쓴 질문으로
   python graph.py --question Q5 --plan-only  # 기획까지만 (목차·배정 확인용)
 
-도메인 값은 config.json 에, 실험 스위치(역할·배정·구역·재위임)는 SWITCHES 에 둔다.
-수업 코드(agent-team-agt1/deep_research_team.py)에서 두 가지를 바꿨다.
+도메인 값은 config.json 에, 실험 스위치(역할 · 배정 · 구역 · 담당구역 · 재위임 · 재촉)는 SWITCHES 에 둔다.
+수업 코드(agent-team-agt1/deep_research_team.py)에서 바꾼 것:
+  · 예산 단위를 '문서 건수'에서 '읽은 글자 수'로 — 이 코퍼스는 문서 길이가 379자~5만 자로 극단적이라,
+    건수 예산이면 처칠 한 건과 싱어 한 건이 같은 값이 된다. 긴 문서는 한 번에 2,500자씩 이어 읽는다.
+  · 코디네이터가 절마다 담당문서(2~6건)를 배정하고, 코드가 실재 여부 · 구역 겹침 · 형식 단위 절을 검사한다.
+    겹침이 나면 한 번 다시 짜게 하고, 그래도 구역이 빈 절은 파견하지 않는다. 공통 문서는 공용 서가.
+  · 문서 카드에 노벨상 공식 수상 연도를 붙이고 연도순으로 준다 — 그래야 시대로 나눈 목차가 나온다.
+  · 집필은 문장마다 '근거' 칸을 채우게 하고 «» 는 코드가 붙인다. 읽지 않은 문서 인용은 코드가 잡는다.
+  · 두 번째 원고는 허위인용이 없고 근거 문서가 줄지 않을 때만 받는다(keep_new).
   · 비용 기록을 전역 변수가 아니라 State 의 cost 목록에 쌓는다 — 누가(코디네이터/서브에이전트)
     어느 절에서 몇 글자를 봤는지가 실행 결과에 그대로 남아, 병렬로 돌아도 격리를 숫자로 증명할 수 있다.
-  · 예산 단위를 '문서 건수'에서 '읽은 글자 수'로 바꿨다 — 이 코퍼스는 문서 길이가 379자~5만 자로
-    극단적이라, 건수 예산이면 처칠 한 건과 싱어 한 건이 같은 값이 된다.
 """
 import argparse
 import hashlib
@@ -29,6 +34,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 import metrics
+from titles import resolve_title, split_refs   # 제목 맞추기 규칙은 metrics 와 함께 쓴다
 
 BASE = Path(__file__).parent
 load_dotenv(BASE / ".env")
@@ -127,12 +133,28 @@ def ask(system, user, who, section="", stage=""):
 
 
 def jload(raw, default):
-    """모델 응답에서 JSON 덩어리를 꺼낸다. 깨졌으면 default."""
-    try:
-        m = re.search(r"\[.*\]" if isinstance(default, list) else r"\{.*\}", raw, re.S)
-        return json.loads(m.group(0))
-    except Exception:
-        return default
+    """모델 응답에서 JSON 을 꺼낸다. 못 꺼내면 default.
+
+    ```json 펜스가 있으면 그 안을 먼저 보고, 여는 괄호마다 json 디코더로 '균형 맞게' 한 덩어리를 읽는다.
+    정규식으로 '첫 여는 괄호부터 마지막 닫는 괄호까지'(욕심) 잡으면 JSON 이 둘 붙었을 때 실패하고, '가장 가까운
+    닫는 괄호까지'(최소) 잡으면 중첩된 목차 JSON 을 중간에서 자른다 — 둘 다 쓰지 않는다 (코드 리뷰 High 1).
+    """
+    want = list if isinstance(default, list) else dict
+    opener = "[" if want is list else "{"
+    text = raw or ""
+    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    decoder = json.JSONDecoder()
+    for chunk in ([fence.group(1)] if fence else []) + [text]:
+        i = chunk.find(opener)
+        while i != -1:
+            try:
+                obj, _ = decoder.raw_decode(chunk, i)
+                if isinstance(obj, want):
+                    return obj
+            except ValueError:
+                pass
+            i = chunk.find(opener, i + 1)
+    return default
 
 
 # ─── ① 기획 ─────────────────────────────────────────────────────
@@ -165,17 +187,6 @@ def cards(width=None):
         if t in works:
             lines.append(f"    · 작품 문서: {', '.join(works[t])}")
     return "\n".join(lines)
-
-
-def resolve_title(name, docs):
-    """모델이 적은 문서 제목을 코퍼스 제목으로 맞춘다. '한강' -> '한강 (작가)' 같은 것만 구제한다."""
-    name = (name or "").strip().strip("«»《》『』「」\"'")
-    # 카드에 붙인 수상 연도를 제목째 베껴 오는 경우 ("셀마 라겔뢰프 (1909년 수상)")
-    name = re.sub(r"\s*[(｜|]\s*\d{4}(·\d{4})*년 수상.*$", "", name).strip()
-    if name in docs:
-        return name
-    base = {re.sub(r"\s*\([^)]*\)$", "", t): t for t in docs}
-    return base.get(name)
 
 
 def allocate_budget(weights, total, min_ratio):
@@ -448,14 +459,14 @@ def pick_next(t, read_pos, avoid, costs, remaining=0, nudge=False):
     return pick if pick in pool else closest(f"{t['절']} {t['지시']}", pool)
 
 
-def read_chunk(t, doc, start, size, costs):
+def read_chunk(t, doc, start, size, costs, who="서브"):
     """문서의 [start, start+size) 구간을 읽고 지시에 관련된 것만 간추린다."""
     chunk = DOCS[doc][start:start + size]
     part = "" if start == 0 and start + size >= len(DOCS[doc]) else f" · {start:,}~{start + len(chunk):,}자 구간"
     raw, c = ask(f"{role_line(t)} 아래 문서 조각을 읽고 지시에 관련된 사실만 여섯 문장 이내로 간추린다. "
                  "사람·작품·연도·사건 이름은 문서에 적힌 그대로 옮긴다. 관련이 없으면 '관련 없음'이라고만 답한다.\n"
                  f"[지시] {t['지시']}",
-                 f"[문서: {doc}{part}]\n{chunk}", "서브", t["절"], "읽기")
+                 f"[문서: {doc}{part}]\n{chunk}", who, t["절"], "읽기")
     costs.append(c)
     return raw.strip(), len(chunk)
 
@@ -545,7 +556,7 @@ def check_citations(text, read):
     raw = re.findall(r"«([^»]+)»", text)
     cited, unknown = [], []
     for c in raw:
-        for part in re.split(r"\s*[,·]\s*", c):      # «A, B» 처럼 한 괄호에 둘을 넣는 경우
+        for part in split_refs(c):                    # «A, B» 처럼 한 괄호에 둘을 넣는 경우
             title = resolve_title(part, DOCS)
             (cited if title else unknown).append(title or part)
     return {"인용": cited, "허위인용": sorted({c for c in cited if c not in read}),
@@ -558,7 +569,7 @@ def strip_invalid(text, read):
 
     def fix(m):
         keep = []
-        for part in re.split(r"\s*[,·]\s*", m.group(1)):
+        for part in split_refs(m.group(1)):
             title = resolve_title(part, DOCS)
             if title in read:
                 keep.append(title)
@@ -782,11 +793,19 @@ def load_question(q):
     return (hit["id"], hit["질문"]) if hit else ("자유", q)
 
 
+def initial_state(question, **switches):
+    return {"question": question, "switches": {**SWITCHES, **switches}, "plan": {}, "sections": [],
+            "visited": [], "cost": [], "log": [], "report": "", "metrics": {}, "task": {}, "prior": {}}
+
+
 def run(question, plan_only=False, **switches):
-    sw = {**SWITCHES, **switches}
-    init = {"question": question, "switches": sw, "plan": {}, "sections": [], "visited": [],
-            "cost": [], "log": [], "report": "", "metrics": {}, "task": {}, "prior": {}}
-    return build(plan_only).invoke(init, {"recursion_limit": 60})
+    return build(plan_only).invoke(initial_state(question, **switches), {"recursion_limit": 60})
+
+
+def stream(question, **switches):
+    """데모용 — 단계가 끝날 때마다 그때까지의 상태를 내놓는다(마지막 것이 최종 결과)."""
+    yield from build().stream(initial_state(question, **switches), {"recursion_limit": 60},
+                              stream_mode="values")
 
 
 def main():
@@ -795,11 +814,12 @@ def main():
     ap.add_argument("--plan-only", action="store_true", help="기획까지만 돌리고 목차를 보여 준다")
     ap.add_argument("--no-save", action="store_true", help="output/ 에 저장하지 않는다")
     ap.add_argument("--print-report", action="store_true", help="보고서 본문을 출력한다")
-    for name in SWITCHES:
-        ap.add_argument(f"--no-{name}", action="store_true", help=f"'{name}' 스위치를 끈다")
+    for name, on in SWITCHES.items():      # 켜진 스위치는 --no-X 로 끄고, 꺼진 스위치는 --X 로 켠다
+        flag, act = (f"--no-{name}", "끈다") if on else (f"--{name}", "켠다")
+        ap.add_argument(flag, action="store_true", dest=f"flip_{name}", help=f"'{name}' 스위치를 {act}")
     args = ap.parse_args()
     qid, question = load_question(args.question)
-    off = {name: False for name in SWITCHES if getattr(args, f"no_{name}")}
+    off = {name: not on for name, on in SWITCHES.items() if getattr(args, f"flip_{name}")}
     out = run(question, plan_only=args.plan_only, **off)
     print(f"[{qid}] {question}\n")
     print("\n".join(out["log"]))
@@ -809,7 +829,7 @@ def main():
         print(f"\n코디네이터가 본 글자 {coord:,} · 코퍼스 전체 {sum(map(len, DOCS.values())):,}")
         return
     if not args.no_save:
-        label = "기본" if not off else "끔-" + "-".join(off)
+        label = "기본" if not off else "바꿈-" + "-".join(off)
         run_id, path = save_run(out, qid, label)
         print(f"\n저장: {_rel(path)} · output/runs.jsonl ({run_id})")
     if args.print_report:

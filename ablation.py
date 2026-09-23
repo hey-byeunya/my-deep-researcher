@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """절제 실험 — 스위치를 하나씩 끄고 같은 질문을 여러 번 돌려, 무엇이 값을 했는지 가른다.
 
-  python ablation.py                         # 질문 Q2·Q5·Q8 × 설정 7개 × 3회 (끊겨도 다시 부르면 이어서)
+  python ablation.py --exp ablation-2       # 질문 Q2·Q5·Q8 × 설정 8개 × 3회 (끊겨도 다시 부르면 이어서)
   python ablation.py --repeats 1 --questions Q5
   python ablation.py --summarize-only        # LLM 없이 runs.jsonl 에서 표만 다시 만든다
+  python ablation.py --remeasure             # 지표 규칙을 고친 뒤 — 저장된 실행 전부의 지표를 LLM 없이 다시 잰다
 
 설정마다 한 번만 돌리면 안 된다. 같은 설정도 시행마다 목차가 달라지고(S3 에서 Q5 목차가 세 번 다 달랐다)
 지표가 십몇 %p 씩 움직인다. 그래서 반복하고, 평균과 함께 흔들림(표준편차)을 적는다.
@@ -17,7 +18,6 @@ import statistics
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import baseline
 import graph
@@ -90,6 +90,25 @@ def run_question(exp, qid, repeats, settings):
                 print(f"   ✗ {qid} r{rep} {setting} 실패: {type(e).__name__}: {e}", flush=True)
 
 
+def remeasure(path=None):
+    """저장된 실행 전부의 지표를 지금의 metrics.measure 로 다시 잰다. 보고서 · 읽은 기록은 그대로다.
+
+    지표 규칙을 고치면(예: «A, B» 를 두 건으로 세기) 저장된 숫자가 옛 규칙으로 남는다. LLM 을 다시 부르지 않고
+    기록만으로 다시 계산해 덮는다 — measure 가 기록만으로 계산되게 만든 이유가 이것이다.
+    """
+    path = path or RUNS
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    changed = 0
+    for r in rows:
+        m, detail = metrics.measure({**r, "all_drafts": r.get("원고전부", r["sections"])}, graph.CORPUS)
+        keep = {k: v for k, v in r.get("metrics", {}).items() if k.startswith("_") and k != "_세부"}
+        new = {**m, "_세부": detail, **keep}
+        changed += any(r.get("metrics", {}).get(k) != v for k, v in m.items())
+        r["metrics"] = new
+    path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    return len(rows), changed
+
+
 def summarize(exp):
     rows = load_runs(exp)
     table = {}
@@ -132,13 +151,17 @@ def print_table(summary):
 
 def main():
     ap = argparse.ArgumentParser(description="절제 실험")
-    ap.add_argument("--exp", default="ablation-1", help="실험 이름 — 같은 이름으로 다시 부르면 이어서 돈다")
+    ap.add_argument("--exp", default="ablation-2", help="실험 이름 — 같은 이름으로 다시 부르면 이어서 돈다")
     ap.add_argument("--questions", nargs="+", default=["Q2", "Q5", "Q8"])
     ap.add_argument("--repeats", type=int, default=3)
-    ap.add_argument("--settings", nargs="+", default=[k for k in SETTINGS if k != "배정끔+재촉"],
-                    choices=list(SETTINGS))
+    ap.add_argument("--settings", nargs="+", default=list(SETTINGS), choices=list(SETTINGS))
     ap.add_argument("--summarize-only", action="store_true")
+    ap.add_argument("--remeasure", action="store_true", help="저장된 실행의 지표를 지금 규칙으로 다시 잰다(LLM 없이)")
     args = ap.parse_args()
+    if args.remeasure:
+        n, changed = remeasure()
+        print(f"지표를 다시 쟀다 — 실행 {n}건 중 {changed}건의 값이 바뀌었다")
+        args.summarize_only = True
     settings = ["기본"] + [s for s in args.settings if s != "기본"]   # 기본이 먼저 — 대조군 예산의 기준
     if not args.summarize_only:
         total = len(args.questions) * args.repeats * len(settings)

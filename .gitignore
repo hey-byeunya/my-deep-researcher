@@ -1,14 +1,36 @@
-# 비밀값 — API 키는 절대 올리지 않는다
-.env
+# 제출물을 실행하는 데 필요 없는 것만 뺀다. 코드 · 데이터 · 실행 결과(output/) · 문서 · 테스트 ·
+# 데모 테마(.streamlit/config.toml)는 제출물이라 추적한다.
 
-# 파이썬
+# ── 비밀값 — API 키는 절대 올리지 않는다 (견본 .env.example 만 올린다)
+.env
+.env.*
+!.env.example
+
+# ── 파이썬 실행 환경 · 도구 캐시
 .venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
-# macOS
-.DS_Store
-
-# 위키백과 API 응답 캐시 (다시 모을 때 재사용)
+# ── 수집 캐시 — 위키백과 API 응답 (collect_corpus.py 가 다시 모을 때 재사용, 결과는 data/corpus.json)
 .cache/
+
+# ── 개발 작업 환경 설정 — 에이전트 하네스 · 브라우저 미리보기(launch.json) · 편집기
+.claude/
+.vscode/
+.idea/
+*.code-workspace
+
+# ── 화면 캡처 도구(playwright) 부산물 — 캡처 결과는 docs/screenshots/ 로 추적한다
+test-results/
+playwright-report/
+
+# ── 운영체제 · 편집기 임시 파일 · 로그
+.DS_Store
+*.swp
+*~
+*.log

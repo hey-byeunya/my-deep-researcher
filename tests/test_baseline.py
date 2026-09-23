@@ -43,9 +43,10 @@ def test_pair_run_picks_latest_default_team_run(tmp_path):
 
 
 def test_closest_prefers_question_words():
+    """대조군과 팀(재촉)이 함께 쓰는 대체 규칙 — 가나다순 첫 번째가 아니라 질문 단어가 겹치는 후보."""
     pool = ["가브리엘 가르시아 마르케스", "셀마 라겔뢰프", "귄터 그라스"]
     # 셀마 라겔뢰프 문서 앞부분에는 '여성'·'노벨'·'수상자' 같은 단어가 나온다
-    assert baseline.closest("여성 노벨 문학상 수상자", pool) == "셀마 라겔뢰프"
+    assert graph.closest("여성 노벨 문학상 수상자", pool) == "셀마 라겔뢰프"
 
 
 def test_broken_solo_report_is_rewritten_once(monkeypatch):

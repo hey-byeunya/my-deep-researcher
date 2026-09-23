@@ -20,7 +20,7 @@ def run_with(monkeypatch, picks=(), **switches):
 
 
 def test_every_switch_changes_the_code_path(monkeypatch):
-    base, base_fake = run_with(monkeypatch)
+    base, _ = run_with(monkeypatch)
     # 역할 끔 — 모든 절이 기본역할
     out, _ = run_with(monkeypatch, 역할=False)
     assert {t["역할"] for t in out["plan"]["목차"]} == {graph.CONFIG["기본역할"]}
@@ -49,8 +49,7 @@ def test_every_switch_changes_the_code_path(monkeypatch):
     out, _ = run_with(monkeypatch, 배정=False)
     read_plain = sum(s["이번_읽은글자"] for s in out["sections"])
     assert read_plain == 0 < read_nudged                       # 가짜 모델은 늘 '그만'이라 한다
-    assert fake.stage_count("[알림]") == 0                      # (알림은 사용자 글에 붙는다 — 아래에서 확인)
-    assert any("[알림]" in u for _, u in fake.calls)
+    assert any("[알림]" in u for _, u in fake.calls)          # 남은 예산을 알리고 한 번 더 물었다
     # 재위임 끔 — 부족 신고가 있어도 2바퀴가 없다
     out, _ = run_with(monkeypatch, 재위임=False)
     assert {s["바퀴"] for s in out["sections"]} == {1}

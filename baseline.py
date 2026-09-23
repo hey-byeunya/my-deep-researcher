@@ -19,7 +19,6 @@
 """
 import argparse
 import json
-import re
 import sys
 
 import graph
@@ -55,11 +54,6 @@ def pair_run(qid, pair_id=None, path=graph.OUTPUT / "runs.jsonl"):
     if not hit:
         sys.exit(f"짝지을 팀 실행이 없다 ({qid}) — 먼저 python graph.py --question {qid}")
     return hit[-1]
-
-
-def closest(question, pool):
-    """질문 단어가 문서 앞 300자에 가장 많이 나오는 후보 — 팀의 재촉 스위치와 같은 규칙(graph.closest)."""
-    return graph.closest(question, pool)
 
 
 def solo(question, budget, n_sections):
@@ -101,10 +95,10 @@ def solo(question, budget, n_sections):
             if doc not in pool:
                 # 그래도 못 고르면 질문 단어와 가장 많이 겹치는 후보 — 가나다순 첫 번째를 기계적으로
                 # 읽히면(수업 코드) 무관한 문서에 예산이 새서 대조군 손발을 묶게 된다
-                doc, forced = closest(question, pool), forced + 1
+                doc, forced = graph.closest(question, pool), forced + 1
         start = read_pos.get(doc, 0)
-        summary, n = graph.read_chunk(t, doc, start, min(cap, budget - spent), costs)
-        costs[-1]["누가"] = "코디"                       # 혼자 하는 쪽은 전부 한 사람이 본다
+        # 혼자 하는 쪽은 읽기도 한 사람이 본다 — '코디' 로 센다(격리율 100%)
+        summary, n = graph.read_chunk(t, doc, start, min(cap, budget - spent), costs, who="코디")
         read_pos[doc] = start + n
         spent += n
         visits.append(["(혼자)", doc, n, 1])

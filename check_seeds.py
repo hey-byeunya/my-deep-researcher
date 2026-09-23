@@ -37,6 +37,8 @@ def official_laureates():
             out.append({"id": l["id"], "이름": name, "성": (l.get("familyName") or {}).get("en", ""),
                         "연도": years, "wikidata": (l.get("wikidata") or {}).get("id")})
         offset += len(data["laureates"])
+        if not data["laureates"] and offset < data["meta"]["count"]:
+            print(f"⚠ 공식 API 가 {data['meta']['count']}명 중 {offset}명에서 빈 페이지를 돌려줬다 — 명단이 모자랄 수 있다")
         if offset >= data["meta"]["count"] or not data["laureates"]:
             return out
         time.sleep(0.5)
@@ -119,7 +121,7 @@ def compare(official, ko, seeds):
 
 def award_years(result):
     """한국어 문서 제목 -> 수상 연도 목록. 공식 명단과 짝지어진 수상자만 (graph.py 의 문서 카드가 쓴다)."""
-    rows = result["일치"] + result["공식ID_의심"]
+    rows = result.get("일치", []) + result.get("공식ID_의심", [])
     return dict(sorted(((r["kowiki"], r["연도"]) for r in rows), key=lambda kv: (kv[1], kv[0])))
 
 

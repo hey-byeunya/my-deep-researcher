@@ -1,8 +1,6 @@
 """기획·배치 — 가짜 LLM 으로 네트워크 없이 검사한다."""
 import json
 
-import pytest
-
 import graph
 
 SW = dict(graph.SWITCHES)
